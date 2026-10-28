@@ -6,6 +6,7 @@ local.properties
 logs/
 .review-avd/
 artifacts/
+dist/
 __pycache__/
 *.py[cod]
 *.keystore

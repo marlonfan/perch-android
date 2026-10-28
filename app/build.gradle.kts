@@ -6,8 +6,23 @@ plugins {
 android {
     namespace = "app.perch"
     compileSdk = 36
-    defaultConfig { applicationId = "app.perch"; minSdk = 26; targetSdk = 36; versionCode = 3; versionName = "0.3.0"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    defaultConfig { applicationId = "app.perch"; minSdk = 26; targetSdk = 36; versionCode = 4; versionName = "0.4.0"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     buildFeatures { compose = true; buildConfig = true }
+    val signingPath = providers.environmentVariable("PERCH_KEYSTORE_PATH").orNull
+    signingConfigs {
+        if (signingPath != null) create("release") {
+            storeFile = file(signingPath)
+            storePassword = providers.environmentVariable("PERCH_STORE_PASSWORD").get()
+            keyAlias = providers.environmentVariable("PERCH_KEY_ALIAS").get()
+            keyPassword = providers.environmentVariable("PERCH_KEY_PASSWORD").get()
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            isDebuggable = false
+            if (signingPath != null) signingConfig = signingConfigs.getByName("release")
+        }
+    }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
 }

@@ -1,5 +1,17 @@
 # 验证记录
 
+## 0.4.0 删除与关闭接收修复
+
+2026-10-29。实体手机崩溃日志确认：`NotificationService.onDestroy` 在主线程调用 `ConnectionPool.evictAll`，关闭 TLS 连接时触发 `NetworkOnMainThreadException`。改用独立于接收协程的 OkHttp executor 清理连接池。日志：`logs/phone-crash-before-fix.log`。按用户要求停止后续手机调试，未在实体手机安装或回归验证 0.4.0。
+
+- PASS — `./gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug`，14 项 JVM 测试与 Lint；日志：`logs/delete-build.log`。
+- PASS — `python tools/deletion_smoke.py`，独立 `emulator-5556`：详情删除与取消、长按多选、全选切换、批量删除、系统通知清理、订阅保留、进程重启后缓存重放不复活、新消息正常接收；日志：`logs/delete-interaction.log`。
+- PASS — 同一脚本中 HTTP 接收连续开关三次，进程稳定、无新增崩溃；HTTPS 根因通过实体手机已有崩溃堆栈定位，此项模拟器检查不代替 HTTPS 真机回归。
+- PASS — `./gradlew.bat :app:assembleRelease :app:lintRelease :app:testDebugUnitTest`，签名 Release、Lint 和 14 项测试；日志：`logs/release-build.log`。
+- PASS — `python tools/prepare_release.py`、`apksigner verify --verbose --print-certs` 与 `aapt dump badging`：版本 0.4.0 / code 4、不可调试、签名有效且证书与 0.3.0 一致；日志：`logs/release-verification.log`。
+
+删除标记按服务地址和消息 ID 区分，与消息一起持久化，兼容旧版本本地数据。详情有单条删除确认，长按或主题菜单可进入选择模式；默认收件箱不增加常驻工具栏。
+
 ## 0.3.0 精简界面与后台接收
 
 2026-10-29，独立 `PerchReview` / `emulator-5556`，Android 15 / API 35。已有真实 ntfy 配置的 `emulator-5554` 未被操作。

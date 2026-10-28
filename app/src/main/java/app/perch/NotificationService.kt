@@ -123,7 +123,11 @@ class NotificationService : Service() {
     }
     override fun onDestroy() {
         if (registered) { connectivity.unregisterNetworkCallback(callback); unregisterReceiver(idleReceiver) }
-        job?.cancel(); scope.cancel(); client.connectionPool.evictAll(); store.status.value = "已暂停"; super.onDestroy()
+        job?.cancel(); scope.cancel()
+        // Closing idle TLS sockets may send close_notify. Service callbacks run on main.
+        // This executor survives cancellation of the reception scope.
+        client.dispatcher.executorService.execute { client.connectionPool.evictAll() }
+        store.status.value = "已暂停"; super.onDestroy()
     }
     private class ConnectionFailure(message: String, val statusCode: Int? = null, val retryAfter: Long? = null) : Exception(message)
     companion object {

@@ -23,7 +23,22 @@ class PerchApp : Application() {
 data class Topic(val name: String, val label: String = name, val muted: Boolean = false, val joined: Long = System.currentTimeMillis() / 1000)
 data class Server(val url: String = "", val token: String = "", val enabled: Boolean = false)
 data class Message(val id: String, val topic: String, val title: String, val body: String, val time: Long, val priority: Int = 3, val read: Boolean = false, val server: String = "", val markdown: Boolean = true, val tags: List<String> = emptyList())
-data class Snapshot(val server: Server, val topics: List<Topic>, val messages: List<Message>, val appearance: String = "system")
+data class MessageKey(val server: String, val id: String)
+val Message.key get() = MessageKey(server, id)
+
+data class Snapshot(val server: Server, val topics: List<Topic>, val messages: List<Message>, val appearance: String = "system", val deleted: Set<MessageKey> = emptySet())
+
+internal object MessageArchive {
+    fun delete(snapshot: Snapshot, keys: Set<MessageKey>): Snapshot {
+        val removed = snapshot.messages.filter { it.key in keys }.map { it.key }.toSet()
+        return snapshot.copy(messages = snapshot.messages.filterNot { it.key in removed }, deleted = snapshot.deleted + removed)
+    }
+    fun accepts(snapshot: Snapshot, message: Message) = message.key !in snapshot.deleted && snapshot.messages.none { it.key == message.key }
+    fun decodeDeleted(array: JSONArray?): Set<MessageKey> = if (array == null) emptySet() else (0 until array.length()).mapNotNull { index ->
+        array.optJSONObject(index)?.let { item -> MessageKey(item.optString("server"), item.optString("id")).takeIf { it.id.isNotBlank() } }
+    }.toSet()
+    fun encodeDeleted(keys: Set<MessageKey>) = JSONArray().apply { keys.forEach { put(JSONObject().put("server", it.server).put("id", it.id)) } }
+}
 
 object Protocol {
     fun server(raw: String): String? {
@@ -75,13 +90,14 @@ class Store(context: Context) {
         val topics = root.optJSONArray("topics") ?: JSONArray()
         val messages = root.optJSONArray("messages") ?: JSONArray()
         val token = runCatching { vault.decrypt(prefs.getString("token", "")!!) }.getOrDefault("")
-        return Snapshot(Server(root.optString("url"), token, root.optBoolean("enabled")), List(topics.length()) { topics.getJSONObject(it).let { t -> Topic(t.getString("name"), t.optString("label"), t.optBoolean("muted"), t.optLong("joined")) } }, List(messages.length()) { messages.getJSONObject(it).let { m -> Message(m.getString("id"), m.getString("topic"), m.getString("title"), m.getString("body"), m.getLong("time"), m.optInt("priority", 3), m.optBoolean("read"), m.optString("server"), m.optBoolean("markdown", true)) } }, root.optString("appearance", "system"))
+        return Snapshot(Server(root.optString("url"), token, root.optBoolean("enabled")), List(topics.length()) { topics.getJSONObject(it).let { t -> Topic(t.getString("name"), t.optString("label"), t.optBoolean("muted"), t.optLong("joined")) } }, List(messages.length()) { messages.getJSONObject(it).let { m -> Message(m.getString("id"), m.getString("topic"), m.getString("title"), m.getString("body"), m.getLong("time"), m.optInt("priority", 3), m.optBoolean("read"), m.optString("server"), m.optBoolean("markdown", true)) } }, root.optString("appearance", "system"), MessageArchive.decodeDeleted(root.optJSONArray("deleted")))
     }
     @Synchronized private fun update(change: (Snapshot) -> Snapshot) {
         val s = change(value)
         val root = JSONObject().put("url", s.server.url).put("enabled", s.server.enabled).put("appearance", s.appearance)
         root.put("topics", JSONArray().apply { s.topics.forEach { put(JSONObject().put("name", it.name).put("label", it.label).put("muted", it.muted).put("joined", it.joined)) } })
         root.put("messages", JSONArray().apply { s.messages.forEach { put(JSONObject().put("id", it.id).put("topic", it.topic).put("title", it.title).put("body", it.body).put("time", it.time).put("priority", it.priority).put("read", it.read).put("server", it.server).put("markdown", it.markdown)) } })
+        root.put("deleted", MessageArchive.encodeDeleted(s.deleted))
         prefs.edit().putString("data", root.toString()).apply()
         state.value = s
     }
@@ -95,8 +111,9 @@ class Store(context: Context) {
     fun removeTopic(name: String) = update { it.copy(topics = it.topics.filterNot { t -> t.name == name }) }
     fun read(id: String, server: String) = update { it.copy(messages = it.messages.map { m -> if (m.id == id && m.server == server) m.copy(read = true) else m }) }
     fun readAll() = update { it.copy(messages = it.messages.map { m -> if (m.server == it.server.url) m.copy(read = true) else m }) }
+    fun delete(keys: Set<MessageKey>) = update { MessageArchive.delete(it, keys) }
     @Synchronized fun insert(message: Message): Boolean {
-        if (value.messages.any { it.server == message.server && it.id == message.id }) return false
+        if (!MessageArchive.accepts(value, message)) return false
         update { it.copy(messages = (it.messages + message).sortedByDescending { m -> m.time }.take(1000)) }
         return true
     }

@@ -85,8 +85,10 @@ class MainActivity : ComponentActivity() {
     var topicDialog by remember { mutableStateOf<Topic?>(null) }
     var addTopic by rememberSaveable { mutableStateOf(false) }
     var demoRead by rememberSaveable { mutableStateOf(listOf<String>()) }
+    var demoDeleted by rememberSaveable { mutableStateOf(listOf<String>()) }
+    var pendingDeletion by remember { mutableStateOf(emptyList<Message>()) }
     val demo = s.server.url.isBlank()
-    val messages = if (demo) Demo.messages.map { it.copy(read = it.read || it.id in demoRead) } else s.messages.filter { it.server == s.server.url && s.topics.any { t -> t.name == it.topic } }
+    val messages = if (demo) Demo.messages.filterNot { it.id in demoDeleted }.map { it.copy(read = it.read || it.id in demoRead) } else s.messages.filter { it.server == s.server.url && s.topics.any { t -> t.name == it.topic } }
     val topics = if (demo) Demo.topics else s.topics
     val unread = messages.count { !it.read }
     val snack = remember { SnackbarHostState() }
@@ -110,7 +112,14 @@ class MainActivity : ComponentActivity() {
         }
     }
     BackHandler(opened != null) { opened = null }
-    if (opened != null) { Detail(opened!!, topics.find { it.name == opened!!.topic }, { opened = null }); return }
+    if (pendingDeletion.isNotEmpty()) AlertDialog(onDismissRequest = { pendingDeletion = emptyList() }, title = { Text(if (pendingDeletion.size == 1) "删除这条消息？" else "删除这 ${pendingDeletion.size} 条消息？") }, text = { Text("仅删除本机消息，不影响主题订阅或服务端记录。") }, confirmButton = { TextButton(onClick = {
+        val keys = pendingDeletion.map { it.key }.toSet()
+        if (demo) demoDeleted = (demoDeleted + pendingDeletion.map { it.id }).distinct() else store.delete(keys)
+        keys.forEach { NotificationManagerCompat.from(context).cancel("${it.server}:${it.id}", 2) }
+        if (opened?.key in keys) opened = null
+        pendingDeletion = emptyList()
+    }) { Text("删除", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton(onClick = { pendingDeletion = emptyList() }) { Text("取消") } })
+    if (opened != null) { Detail(opened!!, topics.find { it.name == opened!!.topic }, { opened = null }, { pendingDeletion = listOf(opened!!) }); return }
     Scaffold(
         snackbarHost = { SnackbarHost(snack) },
         containerColor = MaterialTheme.colorScheme.background,
@@ -127,7 +136,7 @@ class MainActivity : ComponentActivity() {
     ) { padding ->
         AnimatedContent(targetState = tab, modifier = Modifier.padding(padding), label = "page") { selected ->
             when (selected) {
-                0 -> Inbox(messages, topics, demo, status, { serverDialog = true }, ::open, { if (demo) demoRead = Demo.messages.map { it.id } else store.readAll() }, s.server.enabled, { tab = 2 })
+                0 -> Inbox(messages, topics, demo, status, { serverDialog = true }, ::open, { if (demo) demoRead = Demo.messages.map { it.id } else store.readAll() }, s.server.enabled, { tab = 2 }, { pendingDeletion = it })
                 1 -> Subscriptions(topics, demo, s.server, status, { serverDialog = true }, { if (demo) serverDialog = true else addTopic = true }, { if (demo) serverDialog = true else topicDialog = it })
                 else -> SettingsPage(s, status, demo, { serverDialog = true }, { enabled -> store.enable(enabled); if (enabled) connect() else NotificationService.sync(context) }, { store.appearance(it) }, { tab = 1 })
             }
@@ -150,16 +159,32 @@ class MainActivity : ComponentActivity() {
         action()
     }
 }
-@Composable private fun Inbox(messages: List<Message>, topics: List<Topic>, demo: Boolean, status: String, configure: () -> Unit, open: (Message) -> Unit, readAll: () -> Unit, enabled: Boolean, settings: () -> Unit) {
+@Composable private fun Inbox(messages: List<Message>, topics: List<Topic>, demo: Boolean, status: String, configure: () -> Unit, open: (Message) -> Unit, readAll: () -> Unit, enabled: Boolean, settings: () -> Unit, delete: (List<Message>) -> Unit) {
     var onlyUnread by rememberSaveable { mutableStateOf(false) }
     var filter by rememberSaveable { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
+    var selecting by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf(emptySet<MessageKey>()) }
     val visible = messages.filter { (!onlyUnread || !it.read) && (filter.isEmpty() || it.topic == filter) }
+    LaunchedEffect(messages.map { it.key }) {
+        val retained = selected.intersect(messages.map { it.key }.toSet())
+        if (selected.isNotEmpty() && retained.isEmpty()) selecting = false
+        selected = retained
+    }
+    BackHandler(selecting) { selecting = false; selected = emptySet() }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
         item {
             if (demo) DemoBanner(configure) else if (!enabled || status != "已连接") ConnectionBanner(status, enabled, settings)
         }
         item {
+            if (selecting) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp).heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { selecting = false; selected = emptySet() }) { Icon(Icons.Outlined.Close, "取消选择") }
+                    Text(if (selected.isEmpty()) "选择消息" else "已选 ${selected.size} 条", Modifier.weight(1f).padding(start = 4.dp), fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                    IconButton(onClick = { selected = if (visible.all { it.key in selected }) emptySet() else visible.map { it.key }.toSet() }, enabled = visible.isNotEmpty()) { Icon(Icons.Outlined.SelectAll, "全选消息") }
+                    IconButton(onClick = { delete(messages.filter { it.key in selected }) }, enabled = selected.isNotEmpty()) { Icon(Icons.Outlined.DeleteOutline, "删除所选消息", tint = if (selected.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error) }
+                }
+            } else {
             Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 20.dp), verticalAlignment = Alignment.CenterVertically) {
                 Row(Modifier.clip(RoundedCornerShape(24.dp)).background(MaterialTheme.colorScheme.surfaceContainerLow).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     FilterPill("全部 ${messages.size}", !onlyUnread) { onlyUnread = false }
@@ -173,15 +198,17 @@ class MainActivity : ComponentActivity() {
                         topics.forEach { topic -> DropdownMenuItem(text = { Text(topic.label) }, onClick = { filter = topic.name; menu = false }) }
                         HorizontalDivider()
                         DropdownMenuItem(text = { Text("全部标为已读") }, leadingIcon = { Icon(Icons.Outlined.DoneAll, null) }, enabled = messages.any { !it.read }, onClick = { readAll(); menu = false })
+                        DropdownMenuItem(text = { Text("选择消息") }, leadingIcon = { Icon(Icons.Outlined.Checklist, null) }, enabled = visible.isNotEmpty(), onClick = { selecting = true; menu = false })
                     }
                 }
+            }
             }
         }
         if (visible.isEmpty()) item { EmptyState(if (onlyUnread) "暂时没有未读消息" else "让第一条消息，落在这里。", if (demo) "换个筛选条件，看看其他消息。" else "订阅主题后，发送到 ntfy 的消息会出现在这里。", Icons.Outlined.AllInbox) }
         val groups = visible.groupBy { dayLabel(it.time) }
         groups.forEach { (day, list) ->
             item { Row(Modifier.fillMaxWidth().padding(start = 26.dp, end = 26.dp, top = 2.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) { Text(day, fontSize = 12.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(" · ${list.size} 条消息", fontSize = 12.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .8f)) } }
-            items(list, key = { it.server + it.id }) { m -> MessageCard(m, topics.find { it.name == m.topic }, { open(m) }) }
+            items(list, key = { it.server + it.id }) { m -> MessageCard(m, topics.find { it.name == m.topic }, selected = m.key in selected, onClick = { if (selecting) selected = if (m.key in selected) selected - m.key else selected + m.key else open(m) }, onLongClick = { selecting = true; selected = selected + m.key }) }
         }
     }
 }
@@ -207,11 +234,11 @@ class MainActivity : ComponentActivity() {
     val c = when (name) { "homelab" -> MaterialTheme.colorScheme.secondary; "daily" -> MaterialTheme.colorScheme.error; else -> MaterialTheme.colorScheme.primary }
     Box(Modifier.size(size.dp).clip(RoundedCornerShape((size * .32f).dp)).background(c.copy(alpha = .09f)), contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size((size * .5f).dp), tint = c) }
 }
-@Composable private fun MessageCard(m: Message, topic: Topic?, onClick: () -> Unit) {
-    Surface(onClick = onClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainerLowest, border = BorderStroke(.75.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .65f))) {
+@Composable private fun MessageCard(m: Message, topic: Topic?, selected: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
+    Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).clip(RoundedCornerShape(20.dp)).combinedClickable(onClick = onClick, onLongClick = onLongClick, onLongClickLabel = "选择消息"), shape = RoundedCornerShape(20.dp), color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = .6f) else MaterialTheme.colorScheme.surfaceContainerLowest, border = BorderStroke(.75.dp, if (selected) MaterialTheme.colorScheme.primary.copy(alpha = .5f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = .65f))) {
         Column(Modifier.padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TopicIcon(m.topic, 28)
+                if (selected) Icon(Icons.Outlined.CheckCircle, "已选择", Modifier.size(28.dp), tint = MaterialTheme.colorScheme.primary) else TopicIcon(m.topic, 28)
                 Text(topic?.label ?: m.topic, Modifier.weight(1f).padding(start = 9.dp), fontSize = 12.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (m.priority >= 4) { Spacer(Modifier.width(8.dp)); Text("需要关注", Modifier.clip(RoundedCornerShape(5.dp)).background(MaterialTheme.colorScheme.error.copy(alpha = .07f)).padding(horizontal = 6.dp, vertical = 3.dp), fontSize = 10.sp, lineHeight = 14.sp, color = MaterialTheme.colorScheme.error) }
                 Text(timeLabel(m.time), Modifier.padding(start = 10.dp), fontSize = 11.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -230,11 +257,11 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable private fun Detail(m: Message, topic: Topic?, back: () -> Unit) {
+@Composable private fun Detail(m: Message, topic: Topic?, back: () -> Unit, delete: () -> Unit) {
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
     Scaffold(containerColor = MaterialTheme.colorScheme.background, topBar = {
-        TopAppBar(title = { Text("消息", fontSize = 14.sp) }, navigationIcon = { IconButton(onClick = back) { Icon(Icons.Outlined.ArrowBack, "返回") } }, actions = { IconButton(onClick = { clipboard.setText(AnnotatedString(m.body)); copied = true }) { Icon(if (copied) Icons.Outlined.Check else Icons.Outlined.ContentCopy, if (copied) "已复制" else "复制正文", Modifier.size(20.dp)) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background))
+        TopAppBar(title = { Text("消息", fontSize = 14.sp) }, navigationIcon = { IconButton(onClick = back) { Icon(Icons.Outlined.ArrowBack, "返回") } }, actions = { IconButton(onClick = delete) { Icon(Icons.Outlined.DeleteOutline, "删除消息", Modifier.size(20.dp)) }; IconButton(onClick = { clipboard.setText(AnnotatedString(m.body)); copied = true }) { Icon(if (copied) Icons.Outlined.Check else Icons.Outlined.ContentCopy, if (copied) "已复制" else "复制正文", Modifier.size(20.dp)) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background))
     }) { padding ->
         Column(Modifier.padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(top = 8.dp, bottom = 40.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) { TopicIcon(m.topic); Text(topic?.label ?: m.topic, Modifier.padding(start = 10.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium); Spacer(Modifier.weight(1f)); if (m.id.startsWith("demo-")) Text("演示消息", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }

@@ -4,7 +4,9 @@
 
 ## 体验首版
 
-当前版本 0.3.0，Android 8.0 及以上可用。仓库只包含源码与文档，按下方构建步骤生成 APK。本机体验包为 `artifacts/Perch-0.3.0-debug.apk`，使用 debug 签名，可覆盖安装 0.1.0 / 0.2.0 并保留连接配置和本地消息。首次打开有明确标记的演示消息，不会订阅或发布到任何远程主题。
+当前版本 **0.4.0**，Android 8.0 及以上可用。在 [GitHub Releases](https://github.com/marlonfan/perch-android/releases/latest) 下载 `Perch-0.4.0.apk`，直接覆盖安装已有体验版，保留连接配置和本地消息。首次打开有明确标记的演示消息，不会订阅或发布到任何远程主题。
+
+0.4.0 修复关闭后台接收时 HTTPS 连接清理引起的闪退。详情右上角可删除单条消息；列表长按进入多选，可批量删除。删除前确认，只删除本机记录并清除对应系统通知，保留订阅和服务端消息；重连补收不会让已删除记录重新出现。
 
 0.3.0 首页只保留筛选与消息列表：移除「收件箱」标题和常驻「已连接」条，断线或暂停时显示状态；底部是 64 dp 的纯图标导航，保留读屏名称和未读徽标。「全部标为已读」收进主题菜单，移除装饰性宣传语。沿用 0.2.0 的原生 Compose Markdown 排版。
 
@@ -23,6 +25,7 @@
 
 - 暖白 / 墨绿视觉设计，完整浅色、深色、跟随系统，状态栏随应用主题切换。
 - 收件箱：按日期分组、未读筛选、按主题筛选、单条已读、全部已读。
+- 消息详情删除、长按多选、批量删除，持久化删除标记，防止缓存重放后重新出现。
 - Markdown 详情：原生 Compose 标题、嵌套 / 有序列表、引用、链接、等宽代码块、删除线、表格，正文选择与复制。
 - 按 ntfy 的 `markdown` 或 `content_type: text/markdown` 标记渲染；普通文本保留原文。
 - 订阅添加、编辑名称、静音、移除确认，支持一个服务下的多个主题。
@@ -52,9 +55,17 @@
 
 输出：`app/build/outputs/apk/debug/app-debug.apk`。
 
+## 自动发布
+
+`.github/workflows/android-release.yml` 在推送 `v*` 标签时运行 14 项单元测试、Release Lint、签名构建与 APK 签名验证，然后创建 GitHub Release，附 APK 和 `SHA256SUMS.txt`。标签必须与 `app/build.gradle.kts` 中的版本相符，并提供 `release-notes/<版本>.md`。手动运行工作流只生成构建产物。
+
+签名材料保存在仓库 Actions Secrets：`ANDROID_SIGNING_KEYSTORE`（Base64 keystore）、`ANDROID_SIGNING_STORE_PASSWORD`、`ANDROID_SIGNING_KEY_ALIAS`、`ANDROID_SIGNING_KEY_PASSWORD`。构建机临时解码，结束后清理；源码和构建产物不包含 keystore。当前沿用首版体验签名以支持覆盖安装。
+
+本地签名 Release 使用环境变量 `PERCH_KEYSTORE_PATH`、`PERCH_STORE_PASSWORD`、`PERCH_KEY_ALIAS`、`PERCH_KEY_PASSWORD`，然后运行 `:app:assembleRelease` 和 `python tools/prepare_release.py`，产物在 `dist/`。没有签名环境变量时只生成 unsigned Release，打包脚本会拒绝发布。
+
 ## 验证
 
-11 项单元测试覆盖服务地址 / 主题校验、ntfy 事件解析、Markdown 结构与摘要、错误退避、服务端限流及边界值。
+14 项单元测试覆盖服务地址 / 主题校验、ntfy 事件解析、Markdown 结构与摘要、错误退避、服务端限流、删除持久化与缓存重放。
 
 `tools/ntfy_fixture.py` 是仅绑定本机的 ntfy 协议测试服务，不是生产服务端。`tools/android_smoke.py` 在显式选择的 Android 模拟器上操作真实 APK，覆盖页面、主题切换、服务接入、令牌加密、后台接收、系统通知跳转、事件去重、重启补收、离线阅读和暂停偏好。它会改变测试设备上栖信的配置，因此应只用于专用模拟器。
 
@@ -74,3 +85,5 @@ python tools/android_smoke.py integration
 `tools/power_smoke.py` 只允许独立的 `emulator-5556`，使用本机 8788 端口协议 fixture，检查连接复用、锁屏省电、获豁免的强制深度 Doze、空闲重连次数、断网等待、恢复补收与 HTTP 401 重试。脚本退出时恢复原演示配置、网络与电源设置。模拟器 CPU / batterystats 是逻辑观察，不能换算为实体手机的每日耗电。
 
 `tools/settings_smoke.py` 在同一专用演示设备验证纯图标导航、菜单内全部已读，以及 Android 原生电池豁免确认的打开与取消。
+
+`tools/deletion_smoke.py` 在专用模拟器检查单条删除、确认取消、多选全选、批量删除、系统通知清理、重启缓存重放及新消息接收，并恢复原演示偏好。

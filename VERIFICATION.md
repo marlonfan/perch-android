@@ -1,0 +1,82 @@
+# 验证记录
+
+## 0.3.0 精简界面与后台接收
+
+2026-10-29，独立 `PerchReview` / `emulator-5556`，Android 15 / API 35。已有真实 ntfy 配置的 `emulator-5554` 未被操作。
+
+- PASS — `./gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug`，11 项 JVM 测试及 Lint；日志：`logs/quiet-build-final.log`。新增退避上限、鉴权慢重试、429 / Retry-After 和大数边界测试。
+- PASS — `apksigner verify --verbose --print-certs`；当前 APK 签名有效，证书 SHA-256 与 0.2.0 相同，可覆盖安装；日志：`logs/quiet-signature.log`、`logs/quiet-previous-signature.log`。
+- PASS — `python tools/android_smoke.py`：无首页标题、纯图标导航、浅深主题、消息详情、代码复制、订阅和设置；日志：`logs/quiet-preview.log`。
+- PASS — `python tools/reading_smoke.py`：嵌套 / 有序列表、标题层级、行内代码、宽表格横滑与 320 dp 收件箱 / 详情；日志：`logs/quiet-reading.log`。截图使用 `artifacts/quiet-` 前缀，保留前版截图。
+- PASS — `python tools/settings_smoke.py`：纯图标导航、菜单内全部已读、原生 Android 电池豁免确认可打开并取消，取消后系统白名单未改变；日志：`logs/quiet-settings.log`。
+
+界面：底部 64 dp 纯图标导航保留无障碍名称；首页移除「收件箱」标题、正常连接条和重复页尾。「全部标为已读」移入主题菜单。演示提示缩为单行，测试通知移除宣传语。连接完整状态与锁屏接收入口位于设置。
+
+接收：默认网络回调驱动，无网络时不定时重试；配置流去重，消息入库、已读、外观更新和重复启动不重建 HTTP 流；网络切换 / 恢复、退出 Doze 时取消旧 socket 并重连补收。错误退避为 2 秒至 5 分钟，附加正向随机延时；非临时 4xx 至少 5 分钟，尊重服务端 Retry-After 秒数。未增加客户端心跳、轮询任务或常驻 WakeLock。
+
+锁屏设置只在用户点击「去设置」时打开 Android 电池优化豁免确认；界面显示当前豁免及省电状态，不自动修改系统白名单。
+
+`PERCH_DEVICE=emulator-5556 python tools/power_smoke.py` 通过，日志：`logs/quiet-power.log`，本机 8788 端口 fixture，没有向外部主题发消息：
+
+- 普通接收：0.68 秒入库并可见系统通知；锁屏 + 省电模式：0.14 秒；获电池优化豁免的强制深度 Doze：0.56 秒。计时包含 ADB 观测延迟，是本机单次样本，不是公网送达 SLA。
+- 已读更新与重复启动复用同一连接，未增加流请求。
+- 60.2 秒锁屏空闲观察：0 次重连、应用进程增加 3 个 CPU scheduler ticks。fixture 心跳间隔 45 秒。原始系统记录：`logs/quiet-batterystats.txt`、`logs/quiet-power-state.txt`；记录确认处于未充电、完整省电模式。
+- 断网 8 秒服务端未收到流请求，恢复网络后 0.89 秒补收缓存消息。
+- HTTP 401 后 8 秒未快速重试；5 分钟退避值由 JVM 测试验证。
+- 退出测试后恢复独立模拟器的演示偏好、网络、电源设置及原豁免状态。
+
+测量边界：本轮使用本地协议 fixture 与模拟器强制电源状态；它不能模拟真实无线电和硬件休眠，CPU ticks / batterystats 不代表实体手机 mAh 或一夜耗电。未获电池优化豁免时仍可能被 Doze 暂停联网；补收依赖 ntfy 缓存。厂商后台限制及长期真机续航没有被本轮短时测试覆盖。
+
+## 0.2.0 排版更新
+
+2026-10-29：构建与 8 项单元测试、Android Lint 通过。命令：`./gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug`；日志：`logs/redesign-build-final.log`。
+
+标题栏改为 56 dp 单行布局，字号 22 sp；移除顶部 Logo 与装饰性副标题，设置底部仅保留版本信息。消息卡片标题 17 sp、摘要 14 sp，正文 16 sp / 28 sp 行高。Markdown 使用 CommonMark 解析与原生 Compose 块布局，不再使用 TextView 的默认块样式。
+
+页面与阅读检查在独立的 Android 15 / API 35 `PerchReview` 模拟器运行。已有模拟器的 ntfy 配置被保留，没有为了截图清除其数据。阅读样张是关闭网络接收的本地测试数据，仅写入独立测试设备，检查结束后恢复其演示配置。
+
+- PASS — `python tools/android_smoke.py`：收件箱、详情、订阅、设置、浅色与深色主题、代码复制；日志：`logs/redesign-preview-final.log`。
+- PASS — 嵌套列表、有序列表起始编号、标题层级、行内代码、宽表格横向滚动与 Python 代码显示；日志：`logs/redesign-reading.log`。
+- PASS — `python tools/reading_smoke.py`：320 dp 收件箱、筛选、消息详情可操作，页头无 Logo 行；检查后恢复模拟器原始尺寸与演示配置；日志：`logs/redesign-reading.log`。
+- PASS — `apksigner verify --verbose`：当前 debug APK 签名验证；日志：`logs/redesign-signature.log`。
+
+本轮不修改 ntfy 接收与存储协议。0.1.0 的通知联调结果保留在下面的历史记录中。
+
+## 0.1.0 历史记录
+
+验证日期：2026-10-29。执行对象：此目录构建的 `app.perch` debug APK。
+
+## 构建与静态检查
+
+- PASS — `./gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug`；日志：`logs/build-final.log`。
+- 5 项 JVM 单元测试通过；Android Lint 通过。Lint 的非阻断建议仍保留在本机构建报告中。
+
+## 页面与排版
+
+Android 15 / API 35，x86_64，Medium Phone 模拟器，1080 × 2400、420 dpi。
+
+- PASS — 收件箱、Markdown 消息详情、订阅、设置可进入。
+- PASS — 标题、列表、引用、代码块、普通表格实际渲染。
+- PASS — 浅色 / 深色主题切换，状态栏图标同步切换。
+- PASS — 320 dp 窄屏下收件箱筛选、底部导航、消息详情可见可操作；截图为 `11-inbox-320dp.png`、`12-detail-320dp.png`，日志：`logs/compact.log`。
+- 自动化命令：`python tools/android_smoke.py`；日志：`logs/preview-final.log`。
+
+## 通知与持久化
+
+使用绑定到 `127.0.0.1:8787` 的本地 ntfy 协议 fixture，通过模拟器的 `10.0.2.2` 访问。所有消息均在本机产生，没有向公共主题发布。
+
+- PASS — 从 UI 填写服务地址、令牌、主题并建立 JSON 消息流。
+- PASS — 访问令牌未以明文出现在应用 SharedPreferences 中。
+- PASS — App 返回系统桌面后，仍接收并保存新消息，产生系统通知。
+- PASS — 点击系统通知打开正确消息，并持久化已读状态。
+- PASS — 重放同一消息 ID，不重复入库。
+- PASS — 进程停止期间产生的消息，在用户重新打开应用后通过历史游标补收。
+- PASS — 关闭接收、重启应用、关闭模拟器网络后，仍能打开本地消息正文。
+- PASS — 暂停接收的偏好在进程重启后保留。
+- 自动化命令：`python tools/android_smoke.py integration`；日志：`logs/integration-final.log`。
+
+## 尚未验证
+
+尚未连接用户自己的 ntfy 服务，也未在实体手机上验证厂商后台限制、长时间锁屏 / Doze、开机恢复、通知延迟与耗电。当前不据此承诺所有手机都能即时送达。
+
+`artifacts/` 中的截图均来自本次模拟器运行；不是设计稿。

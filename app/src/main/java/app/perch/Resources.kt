@@ -21,7 +21,9 @@ internal object Tags {
             json.keys().asSequence().associateWith { json.getString(it) }
         }.getOrDefault(emptyMap())
     }
-    fun display(tag: String) = emoji[tag] ?: tag
+    fun title(title: String, tags: List<String>): String =
+        (tags.mapNotNull { emoji[it] }.distinct() + title).joinToString(" ")
+    fun labels(tags: List<String>): List<String> = tags.filterNot { it in emoji }
 }
 
 internal object Resources {

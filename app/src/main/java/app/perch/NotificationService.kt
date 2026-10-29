@@ -165,8 +165,8 @@ class NotificationService : Service() {
             intent.putExtra("message_id", m.id).putExtra("message_server", m.server).setData(android.net.Uri.parse("perch-local://message/" + Resources.digest(m.notificationTag))).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             val pending = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
             val failed = m.actions.firstOrNull { it.state == "failed" }?.let { "操作失败：" + it.error }
-            val body = listOfNotNull(m.tags.takeIf { it.isNotEmpty() }?.joinToString(" ") { Tags.display(it) }, Protocol.preview(m.body), m.attachment?.let { "附件：" + it.name }, failed).joinToString("\n")
-            val builder = NotificationCompat.Builder(context, channel).setSmallIcon(R.drawable.ic_notification).setContentTitle(m.title).setContentText(body).setSubText(topic.label).setStyle(NotificationCompat.BigTextStyle().bigText(body)).setContentIntent(pending).setAutoCancel(true).setWhen(m.time * 1000).setVisibility(NotificationCompat.VISIBILITY_PRIVATE).setOnlyAlertOnce(true).setSilent(!alert)
+            val body = listOfNotNull(Tags.labels(m.tags).takeIf { it.isNotEmpty() }?.joinToString(" · "), Protocol.preview(m.body), m.attachment?.let { "附件：" + it.name }, failed).joinToString("\n")
+            val builder = NotificationCompat.Builder(context, channel).setSmallIcon(R.drawable.ic_notification).setContentTitle(Tags.title(m.title, m.tags)).setContentText(body).setSubText(topic.label).setStyle(NotificationCompat.BigTextStyle().bigText(body)).setContentIntent(pending).setAutoCancel(true).setWhen(m.time * 1000).setVisibility(NotificationCompat.VISIBILITY_PRIVATE).setOnlyAlertOnce(true).setSilent(!alert)
             if (largeIcon != null) builder.setLargeIcon(largeIcon)
             m.actions.take(3).forEach { action ->
                 val target = Intent(context, InteractionActivity::class.java).putExtra("message_id", m.id).putExtra("message_server", m.server).putExtra("action_id", action.id).setData(android.net.Uri.parse("perch-local://action/" + Resources.digest(m.notificationTag + ":" + action.id)))

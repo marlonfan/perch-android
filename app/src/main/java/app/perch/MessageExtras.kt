@@ -1,6 +1,8 @@
 package app.perch
 
 import android.graphics.Bitmap
+import android.net.Uri
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -11,11 +13,19 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.*
 import java.io.File
 
@@ -28,27 +38,73 @@ import java.io.File
     else Icon(Icons.Outlined.NotificationsNone, null, Modifier.size(size.dp).padding(4.dp), tint = MaterialTheme.colorScheme.primary)
 }
 
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable internal fun MessageExtras(m: Message) {
     val context = LocalContext.current
     var feedback by remember(m.key) { mutableStateOf("") }
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
+    val labels = Tags.labels(m.tags)
+    val showMessageLink = m.click.isNotBlank() && m.actions.none { it.action == "view" && it.url == m.click }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
         if (m.lockedActions.isNotBlank()) Text("操作凭证无法解密，原始加密数据已保留，暂时无法执行按钮。", color = MaterialTheme.colorScheme.error)
-        if (m.tags.isNotEmpty()) Text(m.tags.joinToString("  ") { Tags.display(it) }, color = MaterialTheme.colorScheme.primary)
-        if (m.click.isNotBlank()) OutlinedButton(onClick = { runCatching { Interactions.open(context, m.click) }.onFailure { feedback = "链接无法打开，请检查地址或安装对应应用" } }) { Icon(Icons.Outlined.OpenInNew, null, Modifier.size(16.dp)); Text("  打开消息链接") }
+        if (labels.isNotEmpty()) Text(labels.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         m.attachment?.let { AttachmentCard(m, it) }
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            m.actions.forEach { action ->
-                OutlinedButton(enabled = action.state != "running" && (action.action != "copy" || action.value.isNotEmpty()), onClick = { feedback = ""; Interactions.execute(context, m, action) { feedback = it ?: "操作成功" } }) {
-                    Text(action.label + when (action.state) { "running" -> " · 执行中"; "success" -> " ✓"; "failed" -> " · 重试"; else -> "" })
+        if (showMessageLink || m.actions.isNotEmpty()) {
+            Text("相关操作", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+                Column {
+                    if (showMessageLink) MessageActionRow("打开消息链接", Icons.Outlined.Link, linkHost(m.click), external = true) {
+                        feedback = ""
+                        runCatching { Interactions.open(context, m.click) }.onFailure { feedback = "链接无法打开，请检查地址或安装对应应用" }
+                    }
+                    m.actions.forEachIndexed { index, action ->
+                        if (showMessageLink || index > 0) HorizontalDivider(Modifier.padding(horizontal = 14.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                        val icon = when (action.action) {
+                            "view" -> Icons.Outlined.Link
+                            "http" -> Icons.Outlined.Send
+                            "copy" -> Icons.Outlined.ContentCopy
+                            else -> Icons.Outlined.Sensors
+                        }
+                        val detail = when (action.state) {
+                            "running" -> "正在执行…"
+                            "success" -> "操作成功"
+                            "failed" -> action.error.ifBlank { "执行失败" } + " · 点按重试"
+                            else -> when (action.action) {
+                                "view" -> linkHost(action.url)
+                                "http" -> action.method + " · " + linkHost(action.url)
+                                "copy" -> if (action.value.isEmpty()) "没有可复制的内容" else "复制到剪贴板"
+                                else -> "发送 Android 广播"
+                            }
+                        }
+                        MessageActionRow(action.label, icon, detail, action.state, enabled = action.state != "running" && (action.action != "copy" || action.value.isNotEmpty()), external = action.action == "view") {
+                            feedback = ""
+                            Interactions.execute(context, m, action) { feedback = it.orEmpty() }
+                        }
+                    }
                 }
             }
         }
-        m.actions.filter { it.state == "failed" }.forEach { Text(it.label + "：" + it.error, color = MaterialTheme.colorScheme.error) }
-        if (feedback.isNotBlank()) Text(feedback, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (feedback.isNotBlank()) Text(feedback, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
     }
 }
 
+private fun linkHost(url: String): String = runCatching { Uri.parse(url).host }.getOrNull().orEmpty().ifBlank { "在其他应用中打开" }
+
+@Composable private fun MessageActionRow(label: String, icon: ImageVector, detail: String, state: String = "", enabled: Boolean = true, external: Boolean = false, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val accent = if (state == "failed") colors.error else if (!enabled && state != "running") colors.onSurface.copy(alpha = .38f) else colors.primary
+    Surface(onClick = onClick, enabled = enabled, color = colors.surfaceContainerLow, modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp).semantics { role = Role.Button }) {
+        Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Icon(icon, null, Modifier.size(20.dp), tint = accent)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(label, fontSize = 14.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium, color = if (!enabled && state != "running") colors.onSurface.copy(alpha = .38f) else colors.onSurface, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                Text(detail, fontSize = 11.sp, lineHeight = 17.sp, color = if (state == "failed") colors.error else colors.onSurfaceVariant, maxLines = if (state == "failed") Int.MAX_VALUE else 2, overflow = TextOverflow.Ellipsis)
+            }
+            if (state == "running") CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            else Icon(when (state) { "success" -> Icons.Outlined.Check; "failed" -> Icons.Outlined.Refresh; else -> if (external) Icons.Outlined.OpenInNew else Icons.Outlined.ChevronRight }, null, Modifier.size(18.dp), tint = if (state == "success" || state == "failed") accent else colors.onSurfaceVariant)
+        }
+    }
+}
+
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable private fun AttachmentCard(m: Message, a: Attachment) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -62,7 +118,7 @@ import java.io.File
             Text(a.name, style = MaterialTheme.typography.titleMedium)
             Text(listOf(a.type.ifBlank { "附件" }, if (a.size > 0) "%.1f MB".format(a.size / 1048576.0) else "大小未知", if (expired) "链接已过期" else if (a.expires > 0) "有效至 " + java.text.SimpleDateFormat("M/d HH:mm", java.util.Locale.CHINA).format(java.util.Date(a.expires * 1000)) else "").filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
             bitmap?.let { Image(it.asImageBitmap(), "附件预览", Modifier.fillMaxWidth().heightIn(max = 360.dp)) }
-            if (file == null) OutlinedButton(enabled = !busy && !expired, onClick = {
+            if (file == null) OutlinedButton(shape = RoundedCornerShape(10.dp), modifier = Modifier.heightIn(min = 48.dp), enabled = !busy && !expired, onClick = {
                 busy = true; error = ""
                 scope.launch {
                     val result = runCatching { Resources.download(context, m, a) }
@@ -70,13 +126,13 @@ import java.io.File
                     if (file != null) bitmap = withContext(Dispatchers.IO) { Resources.bitmap(file!!) }
                     busy = false
                 }
-            }) { Text(if (busy) "正在下载…" else "下载附件") }
+            }) { Icon(Icons.Outlined.Download, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(if (busy) "正在下载…" else "下载附件") }
             if (file != null) {
                 Text("已下载至应用缓存，可离线打开", style = MaterialTheme.typography.bodySmall)
-                Row {
-                    TextButton(onClick = { runCatching { Resources.open(context, file!!, Resources.type(a)) }.onFailure { error = "未找到可打开此文件的应用" } }) { Text("打开") }
-                    TextButton(onClick = { runCatching { Resources.open(context, file!!, Resources.type(a), share = true) }.onFailure { error = "无法分享此文件" } }) { Text("分享") }
-                    if (Resources.type(a).startsWith("image/") || bitmap != null) TextButton(onClick = { scope.launch { bitmap = withContext(Dispatchers.IO) { Resources.bitmap(file!!) }; if (bitmap == null) error = "无法解码此图片" } }) { Text("预览") }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(shape = RoundedCornerShape(10.dp), modifier = Modifier.heightIn(min = 48.dp), onClick = { runCatching { Resources.open(context, file!!, Resources.type(a)) }.onFailure { error = "未找到可打开此文件的应用" } }) { Icon(Icons.Outlined.OpenInNew, null, Modifier.size(16.dp)); Spacer(Modifier.width(6.dp)); Text("打开") }
+                    OutlinedButton(shape = RoundedCornerShape(10.dp), modifier = Modifier.heightIn(min = 48.dp), onClick = { runCatching { Resources.open(context, file!!, Resources.type(a), share = true) }.onFailure { error = "无法分享此文件" } }) { Icon(Icons.Outlined.Share, null, Modifier.size(16.dp)); Spacer(Modifier.width(6.dp)); Text("分享") }
+                    if (Resources.type(a).startsWith("image/") || bitmap != null) OutlinedButton(shape = RoundedCornerShape(10.dp), modifier = Modifier.heightIn(min = 48.dp), onClick = { scope.launch { bitmap = withContext(Dispatchers.IO) { Resources.bitmap(file!!) }; if (bitmap == null) error = "无法解码此图片" } }) { Icon(Icons.Outlined.Image, null, Modifier.size(16.dp)); Spacer(Modifier.width(6.dp)); Text("预览") }
                 }
             }
             if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)

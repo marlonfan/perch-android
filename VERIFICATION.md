@@ -1,5 +1,13 @@
 # 验证记录
 
+## 0.5.1 标题 Emoji 与消息操作区
+
+2026-10-29，基线 v0.5.0。需求与布局决定见 docs/message-presentation.md。按用户要求未运行本地模拟器、未操作实体手机、未向 ntfy 主题发送消息。
+
+- PASS — ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintRelease --offline --console=plain；31 项 JVM 测试（0 failure / 0 error）、Debug APK 与 Release Lint；日志：logs/message-ui-build.log、logs/message-ui-test-results.log。
+
+仅修改消息展示：Emoji 标签前置并跟随标题字号；普通文字标签保留；操作区域使用有按钮语义的全宽操作行、明确状态、失败原因和目标主机提示，附件按钮支持换行。没有改写已存数据或请求执行逻辑。Reviewer（Orca Worker）审查后由 Actions 执行发布构建。
+
 ## 0.5.0 ntfy 兼容性补齐
 
 2026-10-29，基线 2d3cd4b。按用户要求取消本地模拟器验证，未启动模拟器或操作实体手机。

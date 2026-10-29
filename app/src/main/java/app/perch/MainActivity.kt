@@ -280,8 +280,8 @@ class MainActivity : ComponentActivity() {
                 Text(timeLabel(m.time), Modifier.padding(start = 10.dp), fontSize = 11.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (!m.read) Box(Modifier.padding(start = 8.dp).size(5.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
             }
-            Text(m.title, Modifier.padding(top = 12.dp), fontSize = 17.sp, lineHeight = 26.sp, fontWeight = if (m.read) FontWeight.Medium else FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (m.tags.isNotEmpty()) Text(m.tags.joinToString(" ") { Tags.display(it) }, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+            Text(Tags.title(m.title, m.tags), Modifier.padding(top = 12.dp), fontSize = 17.sp, lineHeight = 26.sp, fontWeight = if (m.read) FontWeight.Medium else FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Tags.labels(m.tags).takeIf { it.isNotEmpty() }?.let { Text(it.joinToString(" · "), Modifier.padding(top = 4.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             Text(Protocol.preview(m.body), Modifier.padding(top = 8.dp), fontSize = 14.sp, lineHeight = 23.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
@@ -302,7 +302,7 @@ class MainActivity : ComponentActivity() {
     }) { padding ->
         Column(Modifier.padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(top = 8.dp, bottom = 40.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) { MessageIcon(m); Text(topic?.label ?: m.topic, Modifier.padding(start = 10.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium); Spacer(Modifier.weight(1f)); if (m.id.startsWith("demo-")) Text("演示消息", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            SelectionContainerCompat { Text(m.title, Modifier.padding(top = 18.dp), fontSize = 26.sp, lineHeight = 36.sp, letterSpacing = (-.4).sp, fontWeight = FontWeight.SemiBold) }
+            SelectionContainerCompat { Text(Tags.title(m.title, m.tags), Modifier.padding(top = 18.dp), fontSize = 26.sp, lineHeight = 36.sp, letterSpacing = (-.4).sp, fontWeight = FontWeight.SemiBold) }
             Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Outlined.Schedule, null, Modifier.size(13.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant); Text("  " + SimpleDateFormat("M 月 d 日 · HH:mm", Locale.CHINA).format(Date(m.time * 1000)), fontSize = 12.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); if (m.priority >= 4) Text("    /    高优先级", fontSize = 12.sp, color = MaterialTheme.colorScheme.error) }
             HorizontalDivider(Modifier.padding(vertical = 24.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .7f))
             MarkdownBody(m.body, m.markdown)

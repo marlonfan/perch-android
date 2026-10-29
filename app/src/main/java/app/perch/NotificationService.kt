@@ -57,12 +57,12 @@ class NotificationService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         channels(this)
         val s = store.value
-        if (s.servers.none { server -> server.enabled && s.topics.any { it.server == server.url } }) { stopSelf(); return START_NOT_STICKY }
+        if (s.servers.none { server -> server.enabled && server.lockedToken.isBlank() && s.topics.any { it.server == server.url } }) { stopSelf(); return START_NOT_STICKY }
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         startForeground(1, NotificationCompat.Builder(this, "connection").setSmallIcon(R.drawable.ic_notification).setContentTitle("后台接收已开启").setContentText("${s.topics.size} 个订阅 · ${s.servers.count { it.enabled }} 个服务").setContentIntent(open).setOngoing(true).setSilent(true).setCategory(NotificationCompat.CATEGORY_SERVICE).build())
         if (job?.isActive == true) return START_STICKY
         job = scope.launch {
-            val configurations = store.flow.map { s -> s.servers.filter { server -> server.enabled && s.topics.any { it.server == server.url } }.sortedBy { it.url }.map { server -> Connection(server, s.topics.filter { it.server == server.url }.map { it.name }.sorted()) } }.distinctUntilChanged()
+            val configurations = store.flow.map { s -> s.servers.filter { server -> server.enabled && server.lockedToken.isBlank() && s.topics.any { it.server == server.url } }.sortedBy { it.url }.map { server -> Connection(server, s.topics.filter { it.server == server.url }.map { it.name }.sorted()) } }.distinctUntilChanged()
             combine(configurations, network, resumeGeneration) { configuration, currentNetwork, _ -> configuration to currentNetwork }.collectLatest { (configurations, currentNetwork) ->
                 if (configurations.isEmpty()) { stopSelf(); return@collectLatest }
                 if (currentNetwork == null) { configurations.forEach { report(it.server.url, "等待网络恢复") }; return@collectLatest }
@@ -145,7 +145,7 @@ class NotificationService : Service() {
     companion object {
         fun sync(context: Context) {
             val s = (context.applicationContext as PerchApp).store.value
-            if (s.servers.any { server -> server.enabled && s.topics.any { it.server == server.url } }) ContextCompat.startForegroundService(context, Intent(context, NotificationService::class.java))
+            if (s.servers.any { server -> server.enabled && server.lockedToken.isBlank() && s.topics.any { it.server == server.url } }) ContextCompat.startForegroundService(context, Intent(context, NotificationService::class.java))
             else { context.stopService(Intent(context, NotificationService::class.java)); (context.applicationContext as PerchApp).store.status.value = if (s.topics.isEmpty()) "等待添加订阅" else "已暂停" }
         }
         fun channels(context: Context) {

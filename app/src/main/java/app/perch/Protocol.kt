@@ -5,13 +5,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 data class Topic(val name: String, val label: String = name, val muted: Boolean = false, val joined: Long = System.currentTimeMillis() / 1000, val server: String = "", val minPriority: Int = 1, val notifyTags: String = "", val allowBroadcast: Boolean = false)
-data class Server(val url: String = "", val token: String = "", val enabled: Boolean = false)
+data class Server(val url: String = "", val token: String = "", val enabled: Boolean = false, val lockedToken: String = "")
 data class Attachment(val name: String, val url: String, val type: String = "", val size: Long = 0, val expires: Long = 0)
 data class MessageAction(val id: String, val action: String, val label: String, val url: String = "", val method: String = "POST", val headers: Map<String, String> = emptyMap(), val body: String = "", val clear: Boolean = false, val intent: String = "io.heckel.ntfy.USER_ACTION", val extras: Map<String, String> = emptyMap(), val value: String = "", val state: String = "", val error: String = "")
-data class Message(val id: String, val topic: String, val title: String, val body: String, val time: Long, val priority: Int = 3, val read: Boolean = false, val server: String = "", val markdown: Boolean = true, val tags: List<String> = emptyList(), val click: String = "", val icon: String = "", val actions: List<MessageAction> = emptyList(), val attachment: Attachment? = null, val sequenceId: String = id, val event: String = "message")
+data class Message(val id: String, val topic: String, val title: String, val body: String, val time: Long, val priority: Int = 3, val read: Boolean = false, val server: String = "", val markdown: Boolean = true, val tags: List<String> = emptyList(), val click: String = "", val icon: String = "", val actions: List<MessageAction> = emptyList(), val attachment: Attachment? = null, val sequenceId: String = id, val event: String = "message", val lockedActions: String = "")
 data class MessageKey(val server: String, val id: String)
 val Message.key get() = MessageKey(server, id)
 val Message.notificationTag get() = JSONArray(listOf(server, topic, sequenceId)).toString()
+data class SubscriptionLink(val server: String, val topic: String, val label: String)
 data class SequenceState(val server: String, val topic: String, val sequenceId: String, val time: Long, val id: String, val event: String)
 data class Snapshot(val server: Server, val topics: List<Topic>, val messages: List<Message>, val appearance: String = "system", val deleted: Set<MessageKey> = emptySet(), val servers: List<Server> = if (server.url.isBlank()) emptyList() else listOf(server), val processed: Set<MessageKey> = emptySet(), val sequences: List<SequenceState> = emptyList())
 val Snapshot.activeTopics get() = topics.filter { it.server == server.url || it.server.isEmpty() }
@@ -19,6 +20,9 @@ fun Snapshot.topicFor(m: Message) = topics.find { it.name == m.topic && (it.serv
 fun Topic.shouldNotify(m: Message) = !muted && m.priority >= minPriority && (notifyTags.isBlank() || notifyTags.split(',').map { it.trim() }.any { it in m.tags })
 
 internal object MessageArchive {
+    // Replay metadata intentionally survives the 1000-message display cap. Pruning it merely
+    // to visible IDs resurrects cached messages. Future compaction needs per-topic replay
+    // watermarks (including same-second boundaries) and a database migration.
     fun delete(snapshot: Snapshot, keys: Set<MessageKey>): Snapshot {
         val removed = snapshot.messages.filter { it.key in keys }.map { it.key }.toSet()
         return snapshot.copy(messages = snapshot.messages.filterNot { it.key in removed }, deleted = snapshot.deleted + removed)
@@ -53,6 +57,19 @@ object Protocol {
         if (u.username.isNotEmpty() || u.password.isNotEmpty() || u.query != null || u.fragment != null) return null
         return u.toString().trimEnd('/')
     }
+    fun subscription(raw: String): SubscriptionLink? = runCatching {
+        val uri = java.net.URI(raw)
+        require(uri.scheme == "ntfy" && uri.host != null && uri.rawUserInfo == null)
+        val decode = { value: String -> java.net.URLDecoder.decode(value, "UTF-8") }
+        val query = uri.rawQuery.orEmpty().split('&').filter { it.isNotEmpty() }.associate { decode(it.substringBefore('=')) to decode(it.substringAfter('=', "")) }
+        val path = uri.rawPath.orEmpty().trimStart('/').split('/')
+        val name = decode(path.last())
+        require(topic(name))
+        val builder = okhttp3.HttpUrl.Builder().scheme(if (query["secure"] == "false") "http" else "https").host(uri.host.removeSurrounding("[", "]"))
+        if (uri.port != -1) builder.port(uri.port)
+        if (path.size > 1) builder.addEncodedPathSegments(path.dropLast(1).joinToString("/"))
+        SubscriptionLink(builder.build().toString().trimEnd('/'), name, query["display"]?.take(128)?.takeIf { it.isNotBlank() } ?: name)
+    }.getOrNull()
     fun topic(raw: String) = raw.matches(Regex("[A-Za-z0-9_-]{1,64}")) && raw !in setOf("docs", "static", "file", "app", "account", "settings", "v1")
     fun webUrl(raw: String): Boolean = raw.toHttpUrlOrNull()?.let { it.username.isEmpty() && it.password.isEmpty() } == true
     fun canAuthenticate(resource: String, server: String): Boolean {
@@ -82,7 +99,7 @@ internal object MessageCodec {
     fun decode(o: JSONObject, wire: Boolean = false): Message {
         val a = o.optJSONObject("attachment")?.takeIf { Protocol.webUrl(it.optString("url")) }?.let { Attachment(it.optString("name", "附件"), it.getString("url"), it.optString("type"), it.optLong("size"), it.optLong("expires")) }
         val actions = o.optJSONArray("actions").objects().mapIndexedNotNull { i, action -> runCatching { Protocol.action(action, i) }.getOrNull() }.distinctBy { it.id }
-        return Message(id = o.getString("id"), topic = o.getString("topic"), title = o.optString("title").ifBlank { "新消息" }, body = o.optString(if (wire) "message" else "body"), time = o.optLong("time"), priority = o.optInt("priority", 3).coerceIn(1, 5), read = o.optBoolean("read"), server = o.optString("server"), markdown = o.optBoolean("markdown", !wire) || o.optString("content_type").startsWith("text/markdown"), tags = o.optJSONArray("tags").strings(), click = o.optString("click"), icon = o.optString("icon"), actions = actions, attachment = a, sequenceId = o.optString("sequence_id").ifBlank { o.getString("id") }, event = o.optString("event", "message"))
+        return Message(id = o.getString("id"), topic = o.getString("topic"), title = o.optString("title").ifBlank { "新消息" }, body = o.optString(if (wire) "message" else "body"), time = o.optLong("time"), priority = o.optInt("priority", 3).coerceIn(1, 5), read = o.optBoolean("read"), server = o.optString("server"), markdown = o.optBoolean("markdown", !wire) || o.optString("content_type").startsWith("text/markdown"), tags = o.optJSONArray("tags").strings(), click = o.optString("click"), icon = o.optString("icon"), actions = actions, attachment = a, sequenceId = o.optString("sequence_id").ifBlank { o.getString("id") }, event = o.optString("event", "message"), lockedActions = o.optString("_locked_actions"))
     }
     fun actions(actions: List<MessageAction>) = JSONArray().apply { actions.forEach { a -> put(JSONObject().put("id", a.id).put("action", a.action).put("label", a.label).put("url", a.url).put("method", a.method).put("headers", JSONObject(a.headers)).put("body", a.body).put("clear", a.clear).put("intent", a.intent).put("extras", JSONObject(a.extras)).put("value", a.value).put("state", a.state).put("error", a.error)) } }
     fun encode(m: Message): JSONObject = JSONObject().put("id", m.id).put("topic", m.topic).put("title", m.title).put("body", m.body).put("time", m.time).put("priority", m.priority).put("read", m.read).put("server", m.server).put("markdown", m.markdown).put("tags", JSONArray(m.tags)).put("click", m.click).put("icon", m.icon).put("actions", actions(m.actions)).put("sequence_id", m.sequenceId).put("event", m.event).apply {
@@ -91,22 +108,27 @@ internal object MessageCodec {
 }
 
 internal object SnapshotCodec {
-    fun decode(root: JSONObject, legacyToken: String = "", decrypt: (String) -> String = { it }): Snapshot {
-        val legacy = Server(root.optString("url"), legacyToken, root.optBoolean("enabled"))
-        val servers = root.optJSONArray("servers").objects().mapNotNull { o -> Protocol.server(o.optString("url"))?.let { Server(it, runCatching { decrypt(o.optString("token")) }.getOrDefault(""), o.optBoolean("enabled")) } }.distinctBy { it.url }.ifEmpty { if (legacy.url.isBlank()) emptyList() else listOf(legacy) }
+    fun decode(root: JSONObject, legacyToken: String = "", decrypt: (String) -> String = { it }, legacyLockedToken: String = ""): Snapshot {
+        val legacy = Server(root.optString("url"), legacyToken, root.optBoolean("enabled"), legacyLockedToken)
+        val servers = root.optJSONArray("servers").objects().mapNotNull { o -> Protocol.server(o.optString("url"))?.let { run { val sealed = o.optString("token"); val token = runCatching { decrypt(sealed) }; Server(it, token.getOrDefault(""), o.optBoolean("enabled"), if (token.isFailure) sealed else "") } } }.distinctBy { it.url }.ifEmpty { if (legacy.url.isBlank()) emptyList() else listOf(legacy) }
         val selected = servers.find { it.url == legacy.url } ?: servers.firstOrNull() ?: Server()
         val topics = root.optJSONArray("topics").objects().mapNotNull { t -> t.optString("name").takeIf(Protocol::topic)?.let { Topic(it, t.optString("label").ifBlank { it }, t.optBoolean("muted"), t.optLong("joined"), t.optString("server").ifBlank { legacy.url }, t.optInt("min_priority", 1).coerceIn(1, 5), t.optString("notify_tags"), t.optBoolean("allow_broadcast")) } }
-        val messages = root.optJSONArray("messages").objects().mapNotNull { m -> runCatching {
-            if (m.has("protected_actions")) m.put("actions", runCatching { JSONArray(decrypt(m.getString("protected_actions"))) }.getOrDefault(JSONArray()))
+        val messages = root.optJSONArray("messages").objects().mapNotNull { stored -> val m = JSONObject(stored.toString()); runCatching {
+            if (m.has("protected_actions")) {
+                val sealed = m.getString("protected_actions")
+                val actions = runCatching { JSONArray(decrypt(sealed)) }
+                m.put("actions", actions.getOrDefault(JSONArray()))
+                if (actions.isFailure) m.put("_locked_actions", sealed)
+            }
             MessageCodec.decode(m).let { it.copy(actions = it.actions.map { a -> if (a.state == "running") a.copy(state = "failed", error = "操作被中断，请确认服务端结果后重试") else a }) }
         }.getOrNull() }
         val sequences = root.optJSONArray("sequences").objects().mapNotNull { o -> runCatching { SequenceState(o.getString("server"), o.getString("topic"), o.getString("sequence_id"), o.getLong("time"), o.getString("id"), o.getString("event")) }.getOrNull() }
         return Snapshot(selected, topics, messages, root.optString("appearance", "system"), MessageArchive.decodeDeleted(root.optJSONArray("deleted")), servers, MessageArchive.decodeDeleted(root.optJSONArray("processed")) + if (root.optInt("schema") < 2) messages.map { it.key }.toSet() else emptySet(), if (root.optInt("schema") < 2) messages.map { SequenceState(it.server, it.topic, it.sequenceId, it.time, it.id, it.event) } else sequences)
     }
     fun encode(s: Snapshot, encrypt: (String) -> String = { it }): JSONObject = JSONObject().put("schema", 2).put("url", s.server.url).put("enabled", s.server.enabled).put("appearance", s.appearance).apply {
-        put("servers", JSONArray().apply { s.servers.forEach { put(JSONObject().put("url", it.url).put("enabled", it.enabled).put("token", encrypt(it.token))) } })
+        put("servers", JSONArray().apply { s.servers.forEach { put(JSONObject().put("url", it.url).put("enabled", it.enabled).put("token", it.lockedToken.ifBlank { encrypt(it.token) })) } })
         put("topics", JSONArray().apply { s.topics.forEach { t -> put(JSONObject().put("name", t.name).put("label", t.label).put("muted", t.muted).put("joined", t.joined).put("server", t.server).put("min_priority", t.minPriority).put("notify_tags", t.notifyTags).put("allow_broadcast", t.allowBroadcast)) } })
-        put("messages", JSONArray().apply { s.messages.forEach { m -> put(MessageCodec.encode(m).apply { if (m.actions.isNotEmpty()) { put("protected_actions", encrypt(MessageCodec.actions(m.actions).toString())); remove("actions") } }) } })
+        put("messages", JSONArray().apply { s.messages.forEach { m -> put(MessageCodec.encode(m).apply { if (m.lockedActions.isNotBlank()) { put("protected_actions", m.lockedActions); remove("actions") } else if (m.actions.isNotEmpty()) { put("protected_actions", encrypt(MessageCodec.actions(m.actions).toString())); remove("actions") } }) } })
         put("deleted", MessageArchive.encodeDeleted(s.deleted)); put("processed", MessageArchive.encodeDeleted(s.processed))
         put("sequences", JSONArray().apply { s.sequences.forEach { put(JSONObject().put("server", it.server).put("topic", it.topic).put("sequence_id", it.sequenceId).put("time", it.time).put("id", it.id).put("event", it.event)) } })
     }

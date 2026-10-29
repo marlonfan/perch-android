@@ -103,4 +103,38 @@ class CompatibilityTest {
         val m = Protocol.parse("""{"id":"1","topic":"alerts","event":"message","message":"hello","attachment":{"url":"file:///secret"}}""", server.url)!!
         assertEquals("hello", m.body); assertNull(m.attachment)
     }
+    @Test fun unreadableCredentialsStayEncryptedAcrossUnrelatedChanges() {
+        val m = message().copy(actions = listOf(MessageAction("a", "http", "Ack", url = "https://api.example", headers = mapOf("Authorization" to "action-secret"))))
+        val original = empty().copy(messages = listOf(m))
+        val encode = { value: String -> java.util.Base64.getEncoder().encodeToString(value.toByteArray()) }
+        val encrypted = SnapshotCodec.encode(original, encode)
+        val locked = SnapshotCodec.decode(encrypted, decrypt = { error("keystore unavailable") })
+        assertTrue(locked.server.token.isEmpty()); assertTrue(locked.server.lockedToken.isNotBlank())
+        assertEquals(1, locked.messages.size); assertTrue(locked.messages.single().lockedActions.isNotBlank()); assertTrue(locked.messages.single().actions.isEmpty())
+        val saved = SnapshotCodec.encode(locked.copy(appearance = "dark")) { error("must not re-encrypt locked values") }
+        assertFalse(saved.toString().contains("action-secret"))
+        val unlocked = SnapshotCodec.decode(saved, decrypt = { String(java.util.Base64.getDecoder().decode(it)) })
+        assertEquals(server.token, unlocked.server.token); assertEquals(m.actions, unlocked.messages.single().actions)
+        assertTrue(unlocked.server.lockedToken.isEmpty()); assertTrue(unlocked.messages.single().lockedActions.isEmpty())
+        assertEquals(original, SnapshotCodec.decode(encrypted, decrypt = { String(java.util.Base64.getDecoder().decode(it)) }))
+    }
+    @Test fun legacyUnreadableTokenSurvivesMigration() {
+        val root = JSONObject().put("url", server.url).put("enabled", true)
+        val s = SnapshotCodec.decode(root, legacyLockedToken = "encrypted-old-token")
+        assertEquals("encrypted-old-token", s.server.lockedToken)
+        val saved = SnapshotCodec.encode(s)
+        assertEquals("encrypted-old-token", saved.getJSONArray("servers").getJSONObject(0).getString("token"))
+    }
+    @Test fun subscriptionLinksHandleIpv6PrefixesLabelsAndMalformedInput() {
+        assertEquals(SubscriptionLink("http://[::1]:8080/prefix", "alerts", "My Topic"), Protocol.subscription("ntfy://[::1]:8080/prefix/alerts?secure=false&display=My+Topic"))
+        assertEquals("alerts", Protocol.subscription("ntfy://ntfy.sh/%61lerts")!!.topic)
+        assertEquals(128, Protocol.subscription("ntfy://ntfy.sh/alerts?display=" + "x".repeat(200))!!.label.length)
+        listOf("ntfy:alerts", "ntfy://user:password@example.org/alerts", "ntfy://example.org/a%2Fb", "https://example.org/alerts", "ntfy://example.org/", "ntfy://example.org/alerts?display=%ZZ").forEach { assertNull(it, Protocol.subscription(it)) }
+    }
+    @Test fun invalidHttpMethodsFailBeforeNetworkExecution() {
+        val a = MessageAction("a", "http", "Ack", url = "https://api.example")
+        assertEquals("PATCH", ActionRequests.build(a.copy(method = "patch")).method)
+        try { ActionRequests.build(a.copy(method = "CONNECT")); fail("unsupported method") } catch (_: IllegalArgumentException) { }
+    }
+
 }

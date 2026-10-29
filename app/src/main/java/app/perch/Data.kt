@@ -43,6 +43,7 @@ class Vault {
 class Store(context: Context) {
     private val prefs = context.getSharedPreferences("perch", Context.MODE_PRIVATE)
     private val vault = Vault()
+    val storageError = MutableStateFlow("")
     private val state = MutableStateFlow(load())
     val flow = state.asStateFlow()
     val status = MutableStateFlow("尚未连接")
@@ -50,15 +51,24 @@ class Store(context: Context) {
     val value get() = state.value
     private fun load(): Snapshot {
         val root = runCatching { JSONObject(prefs.getString("data", "{}")!!) }.getOrDefault(JSONObject())
-        val token = runCatching { vault.decrypt(prefs.getString("token", "")!!) }.getOrDefault("")
-        return SnapshotCodec.decode(root, token, vault::decrypt)
+        val sealed = prefs.getString("token", "").orEmpty()
+        val token = runCatching { vault.decrypt(sealed) }
+        return SnapshotCodec.decode(root, token.getOrDefault(""), vault::decrypt, if (token.isFailure) sealed else "").also {
+            if (it.servers.any { s -> s.lockedToken.isNotBlank() } || it.messages.any { m -> m.lockedActions.isNotBlank() }) storageError.value = "部分凭证无法解密，原始加密数据已保留。请在消息服务中重新输入令牌；相关按钮暂不可用。"
+        }
     }
-    @Synchronized private fun update(change: (Snapshot) -> Snapshot) {
+    @Synchronized private fun update(change: (Snapshot) -> Snapshot): Boolean {
         val s = change(value)
-        val root = SnapshotCodec.encode(s, vault::encrypt)
+        val root = try { SnapshotCodec.encode(s, vault::encrypt) } catch (_: Exception) {
+            storageError.value = "加密保存失败，已保留原数据，请稍后重试或重新输入凭证。"
+            return false
+        }
         prefs.edit().putString("data", root.toString()).remove("token").apply()
         state.value = s
+        if (s.servers.none { it.lockedToken.isNotBlank() } && s.messages.none { it.lockedActions.isNotBlank() }) storageError.value = ""
+        return true
     }
+    fun updateServer(server: Server) = update { s -> s.copy(servers = s.servers.map { if (it.url == server.url) server else it }, server = if (s.server.url == server.url) server else s.server) }
     fun server(server: Server) = update { it.copy(server = server, servers = it.servers.filterNot { saved -> saved.url == server.url } + server) }
     fun selectServer(url: String) = update { s -> s.servers.find { it.url == url }?.let { s.copy(server = it) } ?: s }
     fun removeServer(url: String) = update { s ->
@@ -75,15 +85,14 @@ class Store(context: Context) {
     fun delete(keys: Set<MessageKey>) = update { MessageArchive.delete(it, keys) }
     @Synchronized fun insert(message: Message): Boolean {
         if (!MessageArchive.accepts(value, message)) return false
-        update { MessageArchive.apply(it, message) }
+        check(update { MessageArchive.apply(it, message) }) { "消息无法加密保存" }
         return value.messages.any { it.key == message.key }
     }
     @Synchronized fun action(key: MessageKey, actionId: String, state: String, error: String = ""): Boolean {
         val message = value.messages.find { it.key == key } ?: return false
         val action = message.actions.find { it.id == actionId } ?: return false
         if (state == "running" && action.state == "running") return false
-        update { s -> s.copy(messages = s.messages.map { m -> if (m.key != key) m else m.copy(read = m.read || state == "success" && action.clear, actions = m.actions.map { a -> if (a.id == actionId) a.copy(state = state, error = error) else a }) }) }
-        return true
+        return update { s -> s.copy(messages = s.messages.map { m -> if (m.key != key) m else m.copy(read = m.read || state == "success" && action.clear, actions = m.actions.map { a -> if (a.id == actionId) a.copy(state = state, error = error) else a }) }) }
     }
 
     fun cursor(server: String, topic: String): Long = prefs.getLong("cursor:$server:$topic", 0)

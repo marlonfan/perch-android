@@ -86,9 +86,11 @@ class MainActivity : ComponentActivity() {
 @Composable private fun Perch(store: Store, target: Pair<String, String>?, incoming: IncomingShare?, subscriptionLink: Uri?, consumeShare: () -> Unit, consumeLink: () -> Unit, consumeTarget: () -> Unit) {
     val s by store.flow.collectAsState()
     val context = LocalContext.current
+    val storageError by store.storageError.collectAsState()
+    LaunchedEffect(storageError) { if (storageError.isNotBlank()) android.widget.Toast.makeText(context, storageError, android.widget.Toast.LENGTH_LONG).show() }
     val legacyStatus by store.status.collectAsState()
     val statuses by store.connectionStatuses.collectAsState()
-    val status = if (!s.server.enabled) "已暂停" else statuses[s.server.url] ?: legacyStatus
+    val status = if (!s.server.enabled) "已暂停" else if (s.server.lockedToken.isNotBlank()) "凭证无法解密，请重新输入令牌" else statuses[s.server.url] ?: legacyStatus
     var composing by remember { mutableStateOf(false) }
     LaunchedEffect(s.server.url) { composing = false }
     var tab by rememberSaveable { mutableIntStateOf(0) }
@@ -126,10 +128,12 @@ class MainActivity : ComponentActivity() {
     BackHandler(opened != null) { opened = null }
     if (pendingDeletion.isNotEmpty()) AlertDialog(onDismissRequest = { pendingDeletion = emptyList() }, title = { Text(if (pendingDeletion.size == 1) "删除这条消息？" else "删除这 ${pendingDeletion.size} 条消息？") }, text = { Text("仅删除本机消息，不影响主题订阅或服务端记录。") }, confirmButton = { TextButton(onClick = {
         val keys = pendingDeletion.map { it.key }.toSet()
-        if (demo) demoDeleted = (demoDeleted + pendingDeletion.map { it.id }).distinct() else store.delete(keys)
-        pendingDeletion.forEach { NotificationService.cancel(context, it) }
-        if (opened?.key in keys) opened = null
-        pendingDeletion = emptyList()
+        if (demo || store.delete(keys)) {
+            if (demo) demoDeleted = (demoDeleted + pendingDeletion.map { it.id }).distinct()
+            pendingDeletion.forEach { NotificationService.cancel(context, it) }
+            if (opened?.key in keys) opened = null
+            pendingDeletion = emptyList()
+        }
     }) { Text("删除", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton(onClick = { pendingDeletion = emptyList() }) { Text("取消") } })
     LaunchedEffect(s.messages) {
         if (!demo && opened != null) opened = s.messages.find { it.server == opened!!.server && it.topic == opened!!.topic && it.sequenceId == opened!!.sequenceId }
@@ -137,12 +141,15 @@ class MainActivity : ComponentActivity() {
     if ((composing || incoming != null) && !demo) PublishDialog(s, incoming ?: IncomingShare()) { composing = false; consumeShare() }
     if (incoming != null && demo) AlertDialog(onDismissRequest = consumeShare, title = { Text("先连接消息服务") }, text = { Text("添加 ntfy 服务和主题后即可分享发送。") }, confirmButton = { TextButton(onClick = { serverDialog = true; consumeShare() }) { Text("连接 ntfy") } }, dismissButton = { TextButton(onClick = consumeShare) { Text("取消") } })
     if (subscriptionLink != null) {
-        val host = subscriptionLink.host.orEmpty()
-        val name = subscriptionLink.lastPathSegment.orEmpty()
-        val url = Protocol.server((if (subscriptionLink.getQueryParameter("secure") == "false") "http://" else "https://") + host + (subscriptionLink.port.takeIf { it > 0 }?.let { ":" + it } ?: ""))
-        AlertDialog(onDismissRequest = consumeLink, title = { Text("订阅主题？") }, text = { Text((url ?: "无效服务地址") + "/" + name) }, confirmButton = { TextButton(enabled = url != null && Protocol.topic(name), onClick = {
-            val server = s.servers.find { it.url == url } ?: Server(url!!, enabled = true)
-            store.server(server); if (s.topics.none { it.server == server.url && it.name == name }) store.topic(Topic(name, subscriptionLink.getQueryParameter("display")?.takeIf { it.isNotBlank() } ?: name, server = server.url)); connect(); consumeLink()
+        val link = remember(subscriptionLink) { Protocol.subscription(subscriptionLink.toString()) }
+        AlertDialog(onDismissRequest = consumeLink, title = { Text("订阅主题？") }, text = { Text(link?.let { it.server + "/" + it.topic } ?: "无效的订阅链接") }, confirmButton = { TextButton(enabled = link != null, onClick = {
+            if (link != null) {
+                val server = s.servers.find { it.url == link.server } ?: Server(link.server, enabled = true)
+                if (store.server(server)) {
+                    if (s.topics.none { it.server == server.url && it.name == link.topic }) store.topic(Topic(link.topic, link.label, server = server.url))
+                    connect(); consumeLink()
+                }
+            }
         }) { Text("订阅") } }, dismissButton = { TextButton(onClick = consumeLink) { Text("取消") } })
     }
     if (opened != null) { Detail(opened!!, s.topicFor(opened!!), { opened = null }, { pendingDeletion = listOf(opened!!) }); return }
@@ -163,9 +170,9 @@ class MainActivity : ComponentActivity() {
     ) { padding ->
         AnimatedContent(targetState = tab, modifier = Modifier.padding(padding), label = "page") { selected ->
             when (selected) {
-                0 -> Inbox(messages, topics, demo, status, { serverDialog = true }, ::open, { if (demo) demoRead = Demo.messages.map { it.id } else store.readAll() }, s.server.enabled, { tab = 2 }, { pendingDeletion = it })
+                0 -> Inbox(messages, topics, demo, status, { serverDialog = true }, ::open, { if (demo) demoRead = Demo.messages.map { it.id } else if (store.readAll()) messages.forEach { NotificationService.cancel(context, it) } }, s.server.enabled, { tab = 2 }, { pendingDeletion = it })
                 1 -> Subscriptions(topics, demo, s.server, status, { serverDialog = true }, { if (demo) serverDialog = true else addTopic = true }, { if (demo) serverDialog = true else topicDialog = it })
-                else -> SettingsPage(s, status, demo, { serverDialog = true }, { enabled -> store.enable(enabled); if (enabled) connect() else NotificationService.sync(context) }, { store.appearance(it) }, { tab = 1 })
+                else -> SettingsPage(s, status, demo, storageError, { serverDialog = true }, { enabled -> store.enable(enabled); if (enabled) connect() else NotificationService.sync(context) }, { store.appearance(it) }, { tab = 1 })
             }
         }
     }
@@ -174,7 +181,7 @@ class MainActivity : ComponentActivity() {
         if (store.value.activeTopics.isEmpty()) { tab = 1; addTopic = true } else connect()
     }
     if (addTopic || topicDialog != null) TopicDialog(topicDialog, s.activeTopics, { addTopic = false; topicDialog = null }, { topic ->
-        store.topic(topic); addTopic = false; topicDialog = null; if (store.value.server.enabled) connect()
+        if (store.topic(topic)) { addTopic = false; topicDialog = null; if (store.value.server.enabled) connect() }
     }, { name -> store.removeTopic(name); topicDialog = null; NotificationService.sync(context) })
 }
 
@@ -326,7 +333,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable private fun SettingsPage(s: Snapshot, status: String, demo: Boolean, configure: () -> Unit, enable: (Boolean) -> Unit, appearance: (String) -> Unit, subscriptions: () -> Unit) {
+@Composable private fun SettingsPage(s: Snapshot, status: String, demo: Boolean, storageError: String, configure: () -> Unit, enable: (Boolean) -> Unit, appearance: (String) -> Unit, subscriptions: () -> Unit) {
     val context = LocalContext.current
     var appearanceDialog by remember { mutableStateOf(false) }
     var testStatus by remember { mutableStateOf("") }
@@ -349,6 +356,7 @@ class MainActivity : ComponentActivity() {
     }) { Text("去设置") } }, dismissButton = { TextButton(onClick = { batteryDialog = false }) { Text("取消") } })
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 36.dp)) {
         item { PageTitle("设置") }
+        if (storageError.isNotBlank()) item { Text(storageError, Modifier.padding(24.dp), color = MaterialTheme.colorScheme.error) }
         item { SectionLabel("连接与接收") }
         item { SettingsGroup {
             SettingRow(Icons.Outlined.CloudQueue, "消息服务", if (demo) "尚未配置 · 点击连接 ntfy" else s.server.url, configure)
@@ -410,7 +418,7 @@ class MainActivity : ComponentActivity() {
     var label by remember { mutableStateOf(topic?.label.orEmpty()) }
     var muted by remember { mutableStateOf(topic?.muted ?: false) }
     var error by remember { mutableStateOf("") }
-    var minPriority by remember { mutableIntStateOf(topic?.minPriority ?: 1) }
+    var minPriority by remember { mutableIntStateOf((topic?.minPriority ?: 2).coerceAtLeast(2)) }
     var notifyTags by remember { mutableStateOf(topic?.notifyTags.orEmpty()) }
     var allowBroadcast by remember { mutableStateOf(topic?.allowBroadcast ?: false) }
     var confirmRemove by remember { mutableStateOf(false) }
@@ -420,8 +428,8 @@ class MainActivity : ComponentActivity() {
         OutlinedTextField(value = name, onValueChange = { name = it; error = "" }, label = { Text("主题名") }, enabled = topic == null, singleLine = true, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth())
         OutlinedTextField(value = label, onValueChange = { label = it }, label = { Text("显示名称（可选）") }, singleLine = true, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth())
         Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("静音", fontSize = 14.sp); Text("保留消息，关闭该主题的系统提醒", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Switch(checked = muted, onCheckedChange = { muted = it }) }
-        Text("最低提醒优先级：" + minPriority + "（低于此级别仍会保存）", fontSize = 12.sp)
-        Slider(minPriority.toFloat(), { minPriority = it.toInt() }, valueRange = 1f..5f, steps = 3)
+        Text("最低提醒优先级：" + minPriority + "（优先级 1 仅保存，不提醒）", fontSize = 12.sp)
+        Slider(minPriority.toFloat(), { minPriority = it.toInt() }, valueRange = 2f..5f, steps = 2)
         OutlinedTextField(notifyTags, { notifyTags = it }, label = { Text("仅提醒这些标签（逗号分隔，可留空）") }, modifier = Modifier.fillMaxWidth())
         Row { Checkbox(allowBroadcast, { allowBroadcast = it }); Text("允许按钮发送 Android 广播", Modifier.padding(top = 12.dp), fontSize = 12.sp) }
         if (allowBroadcast) Text("仅在信任此主题发送方时开启，可用于 Tasker 自动化。", fontSize = 12.sp)

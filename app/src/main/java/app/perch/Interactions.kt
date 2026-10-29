@@ -17,6 +17,7 @@ internal object ActionRequests {
     fun build(action: MessageAction): Request {
         require(Protocol.webUrl(action.url)) { "操作地址无效" }
         val method = action.method.uppercase(java.util.Locale.ROOT)
+        require(method in setOf("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")) { "不支持此 HTTP 方法" }
         val body = if (method in setOf("GET", "HEAD")) null else action.body.toRequestBody()
         return Request.Builder().url(action.url).method(method, body).apply { action.headers.forEach { (name, value) -> header(name, value) } }.build()
     }
@@ -51,7 +52,7 @@ internal object Interactions {
             val error = runCatching {
                 when (a.action) {
                     "view" -> open(context, a.url)
-                    "copy" -> context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(a.label, a.value))
+                    "copy" -> { require(a.value.isNotEmpty()) { "没有可复制的内容" }; context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(a.label, a.value)) }
                     "broadcast" -> {
                         check(store.value.topicFor(m)?.allowBroadcast == true) { "请先在订阅设置中允许广播操作" }
                         require(a.intent.isNotBlank()) { "广播名称为空" }
@@ -65,7 +66,7 @@ internal object Interactions {
     }
     private fun complete(context: Context, m: Message, a: MessageAction, error: String?) {
         val store = (context.applicationContext as PerchApp).store
-        store.action(m.key, a.id, if (error == null) "success" else "failed", error.orEmpty())
+        if (!store.action(m.key, a.id, if (error == null) "success" else "failed", error.orEmpty())) return
         val current = store.value.messages.find { it.key == m.key } ?: return
         if (error == null && a.clear) NotificationService.cancel(context, m)
         else if (!current.read) store.value.topicFor(current)?.let { NotificationService.notify(context, current, it, alert = false) }
@@ -84,8 +85,15 @@ class InteractionActivity : Activity() {
         }
         val action = m.actions.find { it.id == intent.getStringExtra("action_id") }
         if (action == null) { finish(); return }
-        Interactions.execute(this, m, action) { error -> if (error != null) showDetail(m, error) }
-        finish()
+        if (savedInstanceState != null) { showDetail(m, "操作已中断，请先确认服务端结果再重试"); finish(); return }
+        val progress = if (action.action == "http") android.app.AlertDialog.Builder(this).setMessage("正在执行“" + action.label + "”…").setCancelable(false).show() else null
+        Interactions.execute(this, m, action) { error ->
+            if (!isFinishing && !isDestroyed) {
+                progress?.dismiss()
+                if (error != null) showDetail(m, error)
+                finish()
+            }
+        }
     }
     private fun showDetail(m: Message, error: String) {
         startActivity(Intent(this, MainActivity::class.java).putExtra("message_id", m.id).putExtra("message_server", m.server).putExtra("interaction_error", error).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))

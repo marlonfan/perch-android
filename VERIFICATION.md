@@ -12,6 +12,12 @@
 
 本轮不声称已做 Android 真机/模拟器交互回归。通知按钮的设备行为、分享文件接收、系统打开附件及厂商后台限制仍需实际使用观察。发布前由现有 Orca Worker reviewer 进行代码审查，完成后补充审查记录；发布 APK 由 GitHub Actions 执行单元测试、Release Lint、签名构建及签名验证。
 
+审查修正：处理 HTTP 操作 Activity 生命周期、全部已读通知清理、发送目标切换、编辑服务不切换收件箱、加解密失败反馈与密文保留、最低提醒优先级语义，补充订阅链接边界与 HTTP 方法校验。审查及逐项取舍见 docs/review-0.5.0.md。
+
+- PASS — ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintRelease --offline，31 项 JVM 测试（0 failure / 0 error）、Debug APK 与 Release Lint；日志：logs/review-fixes-final-build.log。
+
+未压缩长期防重放元数据：保留处理记录避免服务端缓存复活旧消息；安全压缩需要独立的主题水位和同秒边界设计。本版按 Reviewer 初审判断作为非阻断的已知限制。
+
 ## 0.4.0 删除与关闭接收修复
 
 2026-10-29。实体手机崩溃日志确认：`NotificationService.onDestroy` 在主线程调用 `ConnectionPool.evictAll`，关闭 TLS 连接时触发 `NetworkOnMainThreadException`。改用独立于接收协程的 OkHttp executor 清理连接池。日志：`logs/phone-crash-before-fix.log`。按用户要求停止后续手机调试，未在实体手机安装或回归验证 0.4.0。

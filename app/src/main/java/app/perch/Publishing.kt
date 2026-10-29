@@ -40,6 +40,7 @@ internal fun uploadInfo(context: Context, uri: Uri): UploadInfo {
 internal object Publisher {
     private val client = OkHttpClient.Builder().callTimeout(60, TimeUnit.SECONDS).retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false).build()
     suspend fun send(context: Context, server: Server, topic: String, title: String, message: String, priority: Int, tags: String, markdown: Boolean, attachment: String, file: Uri?) = withContext(Dispatchers.IO) {
+        require(server.lockedToken.isBlank()) { "服务凭证无法解密，请先重新输入令牌" }
         require(Protocol.topic(topic)) { "主题名无效" }
         require(file != null || message.isNotBlank() || attachment.isNotBlank()) { "请输入正文或添加附件" }
         require(attachment.isBlank() || Protocol.webUrl(attachment)) { "附件地址需为 HTTP / HTTPS" }
@@ -95,7 +96,7 @@ internal object Publisher {
                     Button(onClick = dismiss) { Text("完成") }
                 } else {
                     Text("发送到", style = MaterialTheme.typography.titleMedium)
-                    s.servers.forEach { item -> FilterChip(selected = item.url == server.url, onClick = { if (!sending) serverUrl = item.url }, label = { Text(item.url) }) }
+                    s.servers.forEach { item -> FilterChip(selected = item.url == server.url, onClick = { if (!sending && serverUrl != item.url) { serverUrl = item.url; topic = s.topics.firstOrNull { it.server == item.url }?.name.orEmpty() } }, label = { Text(item.url) }) }
                     OutlinedTextField(topic, { topic = it }, enabled = !sending, label = { Text("主题名") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     if (topics.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { topics.forEach { t -> SuggestionChip(onClick = { if (!sending) topic = t.name }, label = { Text(t.label) }) } }
                     OutlinedTextField(title, { title = it }, enabled = !sending, label = { Text("标题（可选）") }, modifier = Modifier.fillMaxWidth())

@@ -33,12 +33,13 @@ import java.io.File
     val context = LocalContext.current
     var feedback by remember(m.key) { mutableStateOf("") }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
+        if (m.lockedActions.isNotBlank()) Text("操作凭证无法解密，原始加密数据已保留，暂时无法执行按钮。", color = MaterialTheme.colorScheme.error)
         if (m.tags.isNotEmpty()) Text(m.tags.joinToString("  ") { Tags.display(it) }, color = MaterialTheme.colorScheme.primary)
         if (m.click.isNotBlank()) OutlinedButton(onClick = { runCatching { Interactions.open(context, m.click) }.onFailure { feedback = "链接无法打开，请检查地址或安装对应应用" } }) { Icon(Icons.Outlined.OpenInNew, null, Modifier.size(16.dp)); Text("  打开消息链接") }
         m.attachment?.let { AttachmentCard(m, it) }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             m.actions.forEach { action ->
-                OutlinedButton(enabled = action.state != "running", onClick = { feedback = ""; Interactions.execute(context, m, action) { feedback = it ?: "操作成功" } }) {
+                OutlinedButton(enabled = action.state != "running" && (action.action != "copy" || action.value.isNotEmpty()), onClick = { feedback = ""; Interactions.execute(context, m, action) { feedback = it ?: "操作成功" } }) {
                     Text(action.label + when (action.state) { "running" -> " · 执行中"; "success" -> " ✓"; "failed" -> " · 重试"; else -> "" })
                 }
             }
@@ -88,7 +89,11 @@ import java.io.File
     var removing by remember { mutableStateOf<Server?>(null) }
     val context = LocalContext.current
     if (editing != null) {
-        ServerDialog(editing!!, { editing = null; if (s.servers.isEmpty()) dismiss() }) { server -> store.server(server); editing = null; saved() }
+        ServerDialog(editing!!, { editing = null; if (s.servers.isEmpty()) dismiss() }) { server ->
+            val existing = s.servers.any { it.url == server.url }
+            val success = if (existing) store.updateServer(server) else store.server(server)
+            if (success) { editing = null; if (existing) { NotificationService.sync(context); dismiss() } else saved() }
+        }
         return
     }
     AlertDialog(onDismissRequest = dismiss, title = { Text("消息服务") }, text = {

@@ -57,37 +57,44 @@ class NotificationService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         channels(this)
         val s = store.value
-        if (!s.server.enabled || s.server.url.isBlank() || s.topics.isEmpty()) { stopSelf(); return START_NOT_STICKY }
+        if (s.servers.none { server -> server.enabled && s.topics.any { it.server == server.url } }) { stopSelf(); return START_NOT_STICKY }
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        startForeground(1, NotificationCompat.Builder(this, "connection").setSmallIcon(R.drawable.ic_notification).setContentTitle("后台接收已开启").setContentText("${s.topics.size} 个订阅").setContentIntent(open).setOngoing(true).setSilent(true).setCategory(NotificationCompat.CATEGORY_SERVICE).build())
+        startForeground(1, NotificationCompat.Builder(this, "connection").setSmallIcon(R.drawable.ic_notification).setContentTitle("后台接收已开启").setContentText("${s.topics.size} 个订阅 · ${s.servers.count { it.enabled }} 个服务").setContentIntent(open).setOngoing(true).setSilent(true).setCategory(NotificationCompat.CATEGORY_SERVICE).build())
         if (job?.isActive == true) return START_STICKY
         job = scope.launch {
-            val configurations = store.flow.map { Connection(it.server, it.topics.map { topic -> topic.name }.sorted()) }.distinctUntilChanged()
-            combine(configurations, network, resumeGeneration) { configuration, currentNetwork, _ -> configuration to currentNetwork }.collectLatest { (configuration, currentNetwork) ->
-                if (!configuration.server.enabled || configuration.server.url.isBlank() || configuration.names.isEmpty()) { stopSelf(); return@collectLatest }
-                if (currentNetwork == null) { store.status.value = "等待网络恢复"; return@collectLatest }
+            val configurations = store.flow.map { s -> s.servers.filter { server -> server.enabled && s.topics.any { it.server == server.url } }.sortedBy { it.url }.map { server -> Connection(server, s.topics.filter { it.server == server.url }.map { it.name }.sorted()) } }.distinctUntilChanged()
+            combine(configurations, network, resumeGeneration) { configuration, currentNetwork, _ -> configuration to currentNetwork }.collectLatest { (configurations, currentNetwork) ->
+                if (configurations.isEmpty()) { stopSelf(); return@collectLatest }
+                if (currentNetwork == null) { configurations.forEach { report(it.server.url, "等待网络恢复") }; return@collectLatest }
+                coroutineScope { configurations.forEach { configuration -> launch {
                 var attempt = 0
                 while (currentCoroutineContext().isActive) {
                 val started = SystemClock.elapsedRealtime()
                 var code: Int? = null
                 var retryAfter: Long? = null
                 try {
-                    store.status.value = "正在连接…"
+                    report(configuration.server.url, "正在连接…")
                     stream(configuration).collect { event ->
-                        if (event is StreamEvent.Open) store.status.value = "已连接"
+                        if (event is StreamEvent.Open) report(configuration.server.url, "已连接")
                         if (event is StreamEvent.Line) {
                             val m = runCatching { Protocol.parse(event.text, configuration.server.url) }.getOrNull() ?: return@collect
-                            val topic = store.value.topics.find { it.name == m.topic } ?: return@collect
+                            val topic = store.value.topicFor(m) ?: return@collect
+                            val known = !MessageArchive.accepts(store.value, m)
+                            val before = store.value.messages.filter { it.server == m.server && it.topic == m.topic && it.sequenceId == m.sequenceId }
                             val fresh = store.insert(m)
-                            if (fresh && !topic.muted && m.time >= topic.joined && m.priority >= 2) notify(this@NotificationService, m, topic)
+                            if (!known && store.value.sequences.any { it.server == m.server && it.topic == m.topic && it.sequenceId == m.sequenceId && it.id == m.id } && (fresh || m.event != "message")) {
+                                before.forEach { cancel(this@NotificationService, it) }
+                                if (m.event != "message") cancel(this@NotificationService, m)
+                                if (fresh && topic.shouldNotify(m) && m.time >= topic.joined && m.priority >= 2) notify(this@NotificationService, m, topic)
+                            }
                             store.advance(configuration.server.url, m.topic, m.time)
                         }
                     }
-                    store.status.value = "连接中断，正在重连"
+                    report(configuration.server.url, "连接中断，正在重连")
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    store.status.value = if (e is ConnectionFailure) e.message!! else "网络不可用，稍后自动重连"
+                    report(configuration.server.url, if (e is ConnectionFailure) e.message!! else "网络不可用，稍后自动重连")
                     if (e is ConnectionFailure) { code = e.statusCode; retryAfter = e.retryAfter }
                 }
                 if (SystemClock.elapsedRealtime() - started >= 30_000) attempt = 0
@@ -95,9 +102,14 @@ class NotificationService : Service() {
                 // Positive jitter never retries before the server's Retry-After.
                 delay(wait + Random.nextLong(0, (wait / 5).coerceAtLeast(1)))
                 }
+                } } }
             }
         }
         return START_STICKY
+    }
+    private fun report(server: String, status: String) {
+        store.connectionStatuses.update { it + (server to status) }
+        if (store.value.server.url == server) store.status.value = status
     }
     private fun stream(configuration: Connection): Flow<StreamEvent> = callbackFlow {
         val since = configuration.names.minOf { name -> store.cursor(configuration.server.url, name).let { if (it > 0) (it - 1).coerceAtLeast(1) else 1L } }
@@ -133,22 +145,36 @@ class NotificationService : Service() {
     companion object {
         fun sync(context: Context) {
             val s = (context.applicationContext as PerchApp).store.value
-            if (s.server.enabled && s.server.url.isNotBlank() && s.topics.isNotEmpty()) ContextCompat.startForegroundService(context, Intent(context, NotificationService::class.java))
+            if (s.servers.any { server -> server.enabled && s.topics.any { it.server == server.url } }) ContextCompat.startForegroundService(context, Intent(context, NotificationService::class.java))
             else { context.stopService(Intent(context, NotificationService::class.java)); (context.applicationContext as PerchApp).store.status.value = if (s.topics.isEmpty()) "等待添加订阅" else "已暂停" }
         }
         fun channels(context: Context) {
             val nm = context.getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(NotificationChannel("connection", "后台连接", NotificationManager.IMPORTANCE_LOW).apply { setShowBadge(false) })
         }
-        fun notify(context: Context, m: Message, topic: Topic) {
+        fun cancel(context: Context, m: Message) {
+            NotificationManagerCompat.from(context).cancel(m.notificationTag, 2)
+            NotificationManagerCompat.from(context).cancel(m.server + ":" + m.id, 2)
+        }
+        fun notify(context: Context, m: Message, topic: Topic, alert: Boolean = true, largeIcon: android.graphics.Bitmap? = null) {
             if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
             val importance = when { m.priority >= 4 -> NotificationManager.IMPORTANCE_HIGH; m.priority <= 2 -> NotificationManager.IMPORTANCE_LOW; else -> NotificationManager.IMPORTANCE_DEFAULT }
-            val channel = "topic_${topic.name}_${m.priority}"
-            context.getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(channel, "${topic.label} · ${if (m.priority >= 4) "重要" else if (m.priority <= 2) "安静" else "标准"}", importance))
-            val key = "${m.server}:${m.id}"
-            val intent = Intent(context, MainActivity::class.java).putExtra("message_id", m.id).putExtra("message_server", m.server).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            val pending = PendingIntent.getActivity(context, key.hashCode(), intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-            NotificationManagerCompat.from(context).notify(key, 2, NotificationCompat.Builder(context, channel).setSmallIcon(R.drawable.ic_notification).setContentTitle(m.title).setContentText(Protocol.preview(m.body)).setSubText(topic.label).setStyle(NotificationCompat.BigTextStyle().bigText(Protocol.preview(m.body))).setContentIntent(pending).setAutoCancel(true).setWhen(m.time * 1000).setVisibility(NotificationCompat.VISIBILITY_PRIVATE).build())
+            val channel = "topic_" + Resources.digest(m.server + "/" + topic.name).take(16) + "_" + m.priority
+            context.getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(channel, topic.label + " · " + if (m.priority >= 4) "重要" else if (m.priority <= 2) "安静" else "标准", importance))
+            val intent = if (m.click.isNotBlank()) Intent(context, InteractionActivity::class.java).putExtra("click", true) else Intent(context, MainActivity::class.java)
+            intent.putExtra("message_id", m.id).putExtra("message_server", m.server).setData(android.net.Uri.parse("perch-local://message/" + Resources.digest(m.notificationTag))).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            val pending = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            val failed = m.actions.firstOrNull { it.state == "failed" }?.let { "操作失败：" + it.error }
+            val body = listOfNotNull(m.tags.takeIf { it.isNotEmpty() }?.joinToString(" ") { Tags.display(it) }, Protocol.preview(m.body), m.attachment?.let { "附件：" + it.name }, failed).joinToString("\n")
+            val builder = NotificationCompat.Builder(context, channel).setSmallIcon(R.drawable.ic_notification).setContentTitle(m.title).setContentText(body).setSubText(topic.label).setStyle(NotificationCompat.BigTextStyle().bigText(body)).setContentIntent(pending).setAutoCancel(true).setWhen(m.time * 1000).setVisibility(NotificationCompat.VISIBILITY_PRIVATE).setOnlyAlertOnce(true).setSilent(!alert)
+            if (largeIcon != null) builder.setLargeIcon(largeIcon)
+            m.actions.take(3).forEach { action ->
+                val target = Intent(context, InteractionActivity::class.java).putExtra("message_id", m.id).putExtra("message_server", m.server).putExtra("action_id", action.id).setData(android.net.Uri.parse("perch-local://action/" + Resources.digest(m.notificationTag + ":" + action.id)))
+                val pi = PendingIntent.getActivity(context, 0, target, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+                builder.addAction(0, action.label + if (action.state == "running") "…" else "", pi)
+            }
+            NotificationManagerCompat.from(context).notify(m.notificationTag, 2, builder.build())
+            if (largeIcon == null && Protocol.webUrl(m.icon)) Resources.loadNotificationIcon(context, m, topic)
         }
     }
 }

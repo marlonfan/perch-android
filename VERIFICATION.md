@@ -1,5 +1,17 @@
 # 验证记录
 
+## 0.5.0 ntfy 兼容性补齐
+
+2026-10-29，基线 2d3cd4b。按用户要求取消本地模拟器验证，未启动模拟器或操作实体手机。
+
+- PASS — ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug，27 项 JVM 测试、Debug APK 与 Lint；日志：logs/compatibility-build.log。
+- PASS — ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintRelease --offline，27 项测试、Debug APK 与 Release Lint；日志：logs/compatibility-final-build.log。
+- PASS — git diff --cached --check；日志：logs/compatibility-staged-check.log。
+
+新增 13 项协议与模型测试覆盖完整字段、四类操作、动作状态、迁移与加密边界、跨服务/主题序列隔离、更新/清除/撤回、同秒已处理事件重放、旧事件顺序、本地删除后的后续更新、提醒条件、HTTP 默认方法及资源凭证边界。
+
+本轮不声称已做 Android 真机/模拟器交互回归。通知按钮的设备行为、分享文件接收、系统打开附件及厂商后台限制仍需实际使用观察。发布前由现有 Orca Worker reviewer 进行代码审查，完成后补充审查记录；发布 APK 由 GitHub Actions 执行单元测试、Release Lint、签名构建及签名验证。
+
 ## 0.4.0 删除与关闭接收修复
 
 2026-10-29。实体手机崩溃日志确认：`NotificationService.onDestroy` 在主线程调用 `ConnectionPool.evictAll`，关闭 TLS 连接时触发 `NetworkOnMainThreadException`。改用独立于接收协程的 OkHttp executor 清理连接池。日志：`logs/phone-crash-before-fix.log`。按用户要求停止后续手机调试，未在实体手机安装或回归验证 0.4.0。

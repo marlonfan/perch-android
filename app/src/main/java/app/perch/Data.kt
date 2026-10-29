@@ -18,46 +18,8 @@ import javax.crypto.spec.GCMParameterSpec
 
 class PerchApp : Application() {
     lateinit var store: Store
-    override fun onCreate() { super.onCreate(); store = Store(this) }
+    override fun onCreate() { super.onCreate(); Tags.load(this); store = Store(this) }
 }
-data class Topic(val name: String, val label: String = name, val muted: Boolean = false, val joined: Long = System.currentTimeMillis() / 1000)
-data class Server(val url: String = "", val token: String = "", val enabled: Boolean = false)
-data class Message(val id: String, val topic: String, val title: String, val body: String, val time: Long, val priority: Int = 3, val read: Boolean = false, val server: String = "", val markdown: Boolean = true, val tags: List<String> = emptyList())
-data class MessageKey(val server: String, val id: String)
-val Message.key get() = MessageKey(server, id)
-
-data class Snapshot(val server: Server, val topics: List<Topic>, val messages: List<Message>, val appearance: String = "system", val deleted: Set<MessageKey> = emptySet())
-
-internal object MessageArchive {
-    fun delete(snapshot: Snapshot, keys: Set<MessageKey>): Snapshot {
-        val removed = snapshot.messages.filter { it.key in keys }.map { it.key }.toSet()
-        return snapshot.copy(messages = snapshot.messages.filterNot { it.key in removed }, deleted = snapshot.deleted + removed)
-    }
-    fun accepts(snapshot: Snapshot, message: Message) = message.key !in snapshot.deleted && snapshot.messages.none { it.key == message.key }
-    fun decodeDeleted(array: JSONArray?): Set<MessageKey> = if (array == null) emptySet() else (0 until array.length()).mapNotNull { index ->
-        array.optJSONObject(index)?.let { item -> MessageKey(item.optString("server"), item.optString("id")).takeIf { it.id.isNotBlank() } }
-    }.toSet()
-    fun encodeDeleted(keys: Set<MessageKey>) = JSONArray().apply { keys.forEach { put(JSONObject().put("server", it.server).put("id", it.id)) } }
-}
-
-object Protocol {
-    fun server(raw: String): String? {
-        val u = raw.trim().trimEnd('/').toHttpUrlOrNull() ?: return null
-        if (u.username.isNotEmpty() || u.password.isNotEmpty() || u.query != null || u.fragment != null) return null
-        return u.toString().trimEnd('/')
-    }
-    fun topic(raw: String) = raw.matches(Regex("[A-Za-z0-9_-]{1,64}")) && raw !in setOf("docs", "static", "file", "app", "account", "settings", "v1")
-    fun parse(line: String, server: String): Message? {
-        val o = JSONObject(line)
-        if (o.optString("event") != "message") return null
-        val id = o.optString("id"); val topic = o.optString("topic")
-        if (id.isBlank() || topic.isBlank()) return null
-        val tags = o.optJSONArray("tags")
-        return Message(id, topic, o.optString("title").ifBlank { "新消息" }, o.optString("message"), o.optLong("time"), o.optInt("priority", 3).coerceIn(1, 5), server = server, markdown = o.optBoolean("markdown", false) || o.optString("content_type").startsWith("text/markdown"), tags = if (tags == null) emptyList() else List(tags.length()) { tags.getString(it) })
-    }
-    fun preview(body: String) = body.replace(Regex("""```[\s\S]*?```"""), "[代码]").replace(Regex("[#!>*_`~|]"), "").replace(Regex("""\[([^]]+)]\([^)]+\)"""), "$1").replace(Regex("""\s+"""), " ").trim()
-}
-
 class Vault {
     private fun key(): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -84,39 +46,46 @@ class Store(context: Context) {
     private val state = MutableStateFlow(load())
     val flow = state.asStateFlow()
     val status = MutableStateFlow("尚未连接")
+    val connectionStatuses = MutableStateFlow<Map<String, String>>(emptyMap())
     val value get() = state.value
     private fun load(): Snapshot {
         val root = runCatching { JSONObject(prefs.getString("data", "{}")!!) }.getOrDefault(JSONObject())
-        val topics = root.optJSONArray("topics") ?: JSONArray()
-        val messages = root.optJSONArray("messages") ?: JSONArray()
         val token = runCatching { vault.decrypt(prefs.getString("token", "")!!) }.getOrDefault("")
-        return Snapshot(Server(root.optString("url"), token, root.optBoolean("enabled")), List(topics.length()) { topics.getJSONObject(it).let { t -> Topic(t.getString("name"), t.optString("label"), t.optBoolean("muted"), t.optLong("joined")) } }, List(messages.length()) { messages.getJSONObject(it).let { m -> Message(m.getString("id"), m.getString("topic"), m.getString("title"), m.getString("body"), m.getLong("time"), m.optInt("priority", 3), m.optBoolean("read"), m.optString("server"), m.optBoolean("markdown", true)) } }, root.optString("appearance", "system"), MessageArchive.decodeDeleted(root.optJSONArray("deleted")))
+        return SnapshotCodec.decode(root, token, vault::decrypt)
     }
     @Synchronized private fun update(change: (Snapshot) -> Snapshot) {
         val s = change(value)
-        val root = JSONObject().put("url", s.server.url).put("enabled", s.server.enabled).put("appearance", s.appearance)
-        root.put("topics", JSONArray().apply { s.topics.forEach { put(JSONObject().put("name", it.name).put("label", it.label).put("muted", it.muted).put("joined", it.joined)) } })
-        root.put("messages", JSONArray().apply { s.messages.forEach { put(JSONObject().put("id", it.id).put("topic", it.topic).put("title", it.title).put("body", it.body).put("time", it.time).put("priority", it.priority).put("read", it.read).put("server", it.server).put("markdown", it.markdown)) } })
-        root.put("deleted", MessageArchive.encodeDeleted(s.deleted))
-        prefs.edit().putString("data", root.toString()).apply()
+        val root = SnapshotCodec.encode(s, vault::encrypt)
+        prefs.edit().putString("data", root.toString()).remove("token").apply()
         state.value = s
     }
-    @Synchronized fun server(server: Server) {
-        prefs.edit().putString("token", vault.encrypt(server.token)).apply()
-        update { it.copy(server = server) }
+    fun server(server: Server) = update { it.copy(server = server, servers = it.servers.filterNot { saved -> saved.url == server.url } + server) }
+    fun selectServer(url: String) = update { s -> s.servers.find { it.url == url }?.let { s.copy(server = it) } ?: s }
+    fun removeServer(url: String) = update { s ->
+        val servers = s.servers.filterNot { it.url == url }
+        s.copy(servers = servers, server = if (s.server.url == url) servers.firstOrNull() ?: Server() else s.server, topics = s.topics.filterNot { it.server == url })
     }
-    fun enable(enabled: Boolean) = update { it.copy(server = it.server.copy(enabled = enabled)) }
+    fun serverEnabled(url: String, enabled: Boolean) = update { s -> s.copy(servers = s.servers.map { if (it.url == url) it.copy(enabled = enabled) else it }, server = if (s.server.url == url) s.server.copy(enabled = enabled) else s.server) }
+    fun enable(enabled: Boolean) = server(value.server.copy(enabled = enabled))
     fun appearance(value: String) = update { it.copy(appearance = value) }
-    fun topic(topic: Topic) = update { it.copy(topics = it.topics.filterNot { t -> t.name == topic.name } + topic) }
-    fun removeTopic(name: String) = update { it.copy(topics = it.topics.filterNot { t -> t.name == name }) }
+    fun topic(topic: Topic) = update { s -> val owned = topic.copy(server = topic.server.ifBlank { s.server.url }); s.copy(topics = s.topics.filterNot { t -> t.name == owned.name && t.server == owned.server } + owned) }
+    fun removeTopic(name: String) = update { s -> s.copy(topics = s.topics.filterNot { t -> t.name == name && t.server == s.server.url }) }
     fun read(id: String, server: String) = update { it.copy(messages = it.messages.map { m -> if (m.id == id && m.server == server) m.copy(read = true) else m }) }
     fun readAll() = update { it.copy(messages = it.messages.map { m -> if (m.server == it.server.url) m.copy(read = true) else m }) }
     fun delete(keys: Set<MessageKey>) = update { MessageArchive.delete(it, keys) }
     @Synchronized fun insert(message: Message): Boolean {
         if (!MessageArchive.accepts(value, message)) return false
-        update { it.copy(messages = (it.messages + message).sortedByDescending { m -> m.time }.take(1000)) }
+        update { MessageArchive.apply(it, message) }
+        return value.messages.any { it.key == message.key }
+    }
+    @Synchronized fun action(key: MessageKey, actionId: String, state: String, error: String = ""): Boolean {
+        val message = value.messages.find { it.key == key } ?: return false
+        val action = message.actions.find { it.id == actionId } ?: return false
+        if (state == "running" && action.state == "running") return false
+        update { s -> s.copy(messages = s.messages.map { m -> if (m.key != key) m else m.copy(read = m.read || state == "success" && action.clear, actions = m.actions.map { a -> if (a.id == actionId) a.copy(state = state, error = error) else a }) }) }
         return true
     }
+
     fun cursor(server: String, topic: String): Long = prefs.getLong("cursor:$server:$topic", 0)
     @Synchronized fun advance(server: String, topic: String, time: Long) {
         if (time > cursor(server, topic)) prefs.edit().putLong("cursor:$server:$topic", time).apply()

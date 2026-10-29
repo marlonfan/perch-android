@@ -6,7 +6,8 @@ plugins {
 android {
     namespace = "app.perch"
     compileSdk = 36
-    defaultConfig { applicationId = "app.perch"; minSdk = 26; targetSdk = 36; versionCode = 4; versionName = "0.4.0"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    buildToolsVersion = "36.0.0"
+    defaultConfig { applicationId = "app.perch"; minSdk = 26; targetSdk = 36; versionCode = 5; versionName = "0.5.0"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     buildFeatures { compose = true; buildConfig = true }
     val signingPath = providers.environmentVariable("PERCH_KEYSTORE_PATH").orNull
     signingConfigs {

@@ -58,6 +58,8 @@ private val Dark = darkColorScheme(primary = Color(0xFFB3CEAD), onPrimary = Colo
 
 class MainActivity : ComponentActivity() {
     private var target by mutableStateOf<Pair<String, String>?>(null)
+    private var incoming by mutableStateOf<IncomingShare?>(null)
+    private var subscriptionLink by mutableStateOf<Uri?>(null)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState); enableEdgeToEdge(); receive(intent)
         val store = (application as PerchApp).store
@@ -66,19 +68,29 @@ class MainActivity : ComponentActivity() {
             val dark = when (snapshot.appearance) { "light" -> false; "dark" -> true; else -> isSystemInDarkTheme() }
             SideEffect { WindowCompat.getInsetsController(window, window.decorView).apply { isAppearanceLightStatusBars = !dark; isAppearanceLightNavigationBars = !dark } }
             MaterialTheme(colorScheme = if (dark) Dark else Light, typography = Typography(bodyLarge = TextStyle(fontSize = 14.sp, lineHeight = TextUnit.Unspecified))) {
-                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { Perch(store, target) { target = null } }
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { Perch(store, target, incoming, subscriptionLink, { incoming = null }, { subscriptionLink = null }) { target = null } }
             }
         }
-        if (store.value.server.enabled) NotificationService.sync(this)
+        NotificationService.sync(this)
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); receive(intent) }
-    private fun receive(intent: Intent?) { target = intent?.getStringExtra("message_id")?.let { it to intent.getStringExtra("message_server").orEmpty() } }
+    @Suppress("DEPRECATION")
+    private fun receive(intent: Intent?) {
+        target = intent?.getStringExtra("message_id")?.let { it to intent.getStringExtra("message_server").orEmpty() }
+        if (intent?.action == Intent.ACTION_SEND) incoming = IncomingShare(intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty(), intent.getStringExtra(Intent.EXTRA_SUBJECT).orEmpty(), (intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))?.takeIf { it.scheme == "content" })
+        if (intent?.action == Intent.ACTION_VIEW && intent.data?.scheme == "ntfy" && intent.data?.isHierarchical == true) subscriptionLink = intent.data
+        intent?.getStringExtra("interaction_error")?.let { android.widget.Toast.makeText(this, it, android.widget.Toast.LENGTH_LONG).show() }
+    }
 }
 
-@Composable private fun Perch(store: Store, target: Pair<String, String>?, consumeTarget: () -> Unit) {
+@Composable private fun Perch(store: Store, target: Pair<String, String>?, incoming: IncomingShare?, subscriptionLink: Uri?, consumeShare: () -> Unit, consumeLink: () -> Unit, consumeTarget: () -> Unit) {
     val s by store.flow.collectAsState()
     val context = LocalContext.current
-    val status by store.status.collectAsState()
+    val legacyStatus by store.status.collectAsState()
+    val statuses by store.connectionStatuses.collectAsState()
+    val status = if (!s.server.enabled) "已暂停" else statuses[s.server.url] ?: legacyStatus
+    var composing by remember { mutableStateOf(false) }
+    LaunchedEffect(s.server.url) { composing = false }
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var opened by remember { mutableStateOf<Message?>(null) }
     var serverDialog by rememberSaveable { mutableStateOf(false) }
@@ -88,8 +100,8 @@ class MainActivity : ComponentActivity() {
     var demoDeleted by rememberSaveable { mutableStateOf(listOf<String>()) }
     var pendingDeletion by remember { mutableStateOf(emptyList<Message>()) }
     val demo = s.server.url.isBlank()
-    val messages = if (demo) Demo.messages.filterNot { it.id in demoDeleted }.map { it.copy(read = it.read || it.id in demoRead) } else s.messages.filter { it.server == s.server.url && s.topics.any { t -> t.name == it.topic } }
-    val topics = if (demo) Demo.topics else s.topics
+    val messages = if (demo) Demo.messages.filterNot { it.id in demoDeleted }.map { it.copy(read = it.read || it.id in demoRead) } else s.messages.filter { it.server == s.server.url && s.activeTopics.any { t -> t.name == it.topic } }
+    val topics = if (demo) Demo.topics else s.activeTopics
     val unread = messages.count { !it.read }
     val snack = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -104,7 +116,7 @@ class MainActivity : ComponentActivity() {
     fun open(m: Message) {
         opened = m.copy(read = true)
         if (demo) demoRead = demoRead + m.id else store.read(m.id, m.server)
-        NotificationManagerCompat.from(context).cancel("${m.server}:${m.id}", 2)
+        NotificationService.cancel(context, m)
     }
     LaunchedEffect(target, s.messages) {
         target?.let { key ->
@@ -115,14 +127,29 @@ class MainActivity : ComponentActivity() {
     if (pendingDeletion.isNotEmpty()) AlertDialog(onDismissRequest = { pendingDeletion = emptyList() }, title = { Text(if (pendingDeletion.size == 1) "删除这条消息？" else "删除这 ${pendingDeletion.size} 条消息？") }, text = { Text("仅删除本机消息，不影响主题订阅或服务端记录。") }, confirmButton = { TextButton(onClick = {
         val keys = pendingDeletion.map { it.key }.toSet()
         if (demo) demoDeleted = (demoDeleted + pendingDeletion.map { it.id }).distinct() else store.delete(keys)
-        keys.forEach { NotificationManagerCompat.from(context).cancel("${it.server}:${it.id}", 2) }
+        pendingDeletion.forEach { NotificationService.cancel(context, it) }
         if (opened?.key in keys) opened = null
         pendingDeletion = emptyList()
     }) { Text("删除", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton(onClick = { pendingDeletion = emptyList() }) { Text("取消") } })
-    if (opened != null) { Detail(opened!!, topics.find { it.name == opened!!.topic }, { opened = null }, { pendingDeletion = listOf(opened!!) }); return }
+    LaunchedEffect(s.messages) {
+        if (!demo && opened != null) opened = s.messages.find { it.server == opened!!.server && it.topic == opened!!.topic && it.sequenceId == opened!!.sequenceId }
+    }
+    if ((composing || incoming != null) && !demo) PublishDialog(s, incoming ?: IncomingShare()) { composing = false; consumeShare() }
+    if (incoming != null && demo) AlertDialog(onDismissRequest = consumeShare, title = { Text("先连接消息服务") }, text = { Text("添加 ntfy 服务和主题后即可分享发送。") }, confirmButton = { TextButton(onClick = { serverDialog = true; consumeShare() }) { Text("连接 ntfy") } }, dismissButton = { TextButton(onClick = consumeShare) { Text("取消") } })
+    if (subscriptionLink != null) {
+        val host = subscriptionLink.host.orEmpty()
+        val name = subscriptionLink.lastPathSegment.orEmpty()
+        val url = Protocol.server((if (subscriptionLink.getQueryParameter("secure") == "false") "http://" else "https://") + host + (subscriptionLink.port.takeIf { it > 0 }?.let { ":" + it } ?: ""))
+        AlertDialog(onDismissRequest = consumeLink, title = { Text("订阅主题？") }, text = { Text((url ?: "无效服务地址") + "/" + name) }, confirmButton = { TextButton(enabled = url != null && Protocol.topic(name), onClick = {
+            val server = s.servers.find { it.url == url } ?: Server(url!!, enabled = true)
+            store.server(server); if (s.topics.none { it.server == server.url && it.name == name }) store.topic(Topic(name, subscriptionLink.getQueryParameter("display")?.takeIf { it.isNotBlank() } ?: name, server = server.url)); connect(); consumeLink()
+        }) { Text("订阅") } }, dismissButton = { TextButton(onClick = consumeLink) { Text("取消") } })
+    }
+    if (opened != null) { Detail(opened!!, s.topicFor(opened!!), { opened = null }, { pendingDeletion = listOf(opened!!) }); return }
     Scaffold(
         snackbarHost = { SnackbarHost(snack) },
         containerColor = MaterialTheme.colorScheme.background,
+        floatingActionButton = { if (!demo && tab == 0) SmallFloatingActionButton(onClick = { composing = true }) { Icon(Icons.Outlined.Edit, "发送消息") } },
         bottomBar = {
             Column(Modifier.navigationBarsPadding()) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .6f))
@@ -142,13 +169,11 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-    if (serverDialog) ServerDialog(s.server, { serverDialog = false }) { server ->
-        runCatching { store.server(server.copy(enabled = true)) }.onSuccess {
-            serverDialog = false
-            if (s.topics.isEmpty()) { tab = 1; addTopic = true } else connect()
-        }.onFailure { scope.launch { snack.showSnackbar("凭证保存失败，请重试。") } }
+    if (serverDialog) ServerManager(s, store, { serverDialog = false }) {
+        serverDialog = false
+        if (store.value.activeTopics.isEmpty()) { tab = 1; addTopic = true } else connect()
     }
-    if (addTopic || topicDialog != null) TopicDialog(topicDialog, s.topics, { addTopic = false; topicDialog = null }, { topic ->
+    if (addTopic || topicDialog != null) TopicDialog(topicDialog, s.activeTopics, { addTopic = false; topicDialog = null }, { topic ->
         store.topic(topic); addTopic = false; topicDialog = null; if (store.value.server.enabled) connect()
     }, { name -> store.removeTopic(name); topicDialog = null; NotificationService.sync(context) })
 }
@@ -162,10 +187,12 @@ class MainActivity : ComponentActivity() {
 @Composable private fun Inbox(messages: List<Message>, topics: List<Topic>, demo: Boolean, status: String, configure: () -> Unit, open: (Message) -> Unit, readAll: () -> Unit, enabled: Boolean, settings: () -> Unit, delete: (List<Message>) -> Unit) {
     var onlyUnread by rememberSaveable { mutableStateOf(false) }
     var filter by rememberSaveable { mutableStateOf("") }
+    var query by rememberSaveable { mutableStateOf("") }
+    var searching by rememberSaveable { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf(emptySet<MessageKey>()) }
-    val visible = messages.filter { (!onlyUnread || !it.read) && (filter.isEmpty() || it.topic == filter) }
+    val visible = messages.filter { (!onlyUnread || !it.read) && (filter.isEmpty() || it.topic == filter) && (query.isBlank() || listOf(it.title, it.body, it.tags.joinToString(" ")).any { text -> text.contains(query, ignoreCase = true) }) }
     LaunchedEffect(messages.map { it.key }) {
         val retained = selected.intersect(messages.map { it.key }.toSet())
         if (selected.isNotEmpty() && retained.isEmpty()) selecting = false
@@ -198,12 +225,14 @@ class MainActivity : ComponentActivity() {
                         topics.forEach { topic -> DropdownMenuItem(text = { Text(topic.label) }, onClick = { filter = topic.name; menu = false }) }
                         HorizontalDivider()
                         DropdownMenuItem(text = { Text("全部标为已读") }, leadingIcon = { Icon(Icons.Outlined.DoneAll, null) }, enabled = messages.any { !it.read }, onClick = { readAll(); menu = false })
+                        DropdownMenuItem(text = { Text("搜索消息") }, leadingIcon = { Icon(Icons.Outlined.Search, null) }, onClick = { searching = true; menu = false })
                         DropdownMenuItem(text = { Text("选择消息") }, leadingIcon = { Icon(Icons.Outlined.Checklist, null) }, enabled = visible.isNotEmpty(), onClick = { selecting = true; menu = false })
                     }
                 }
             }
             }
         }
+        if (searching) item { OutlinedTextField(query, { query = it }, label = { Text("搜索标题、正文和标签") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp), trailingIcon = { IconButton(onClick = { query = ""; searching = false }) { Icon(Icons.Outlined.Close, "关闭搜索") } }) }
         if (visible.isEmpty()) item { EmptyState(if (onlyUnread) "暂时没有未读消息" else "让第一条消息，落在这里。", if (demo) "换个筛选条件，看看其他消息。" else "订阅主题后，发送到 ntfy 的消息会出现在这里。", Icons.Outlined.AllInbox) }
         val groups = visible.groupBy { dayLabel(it.time) }
         groups.forEach { (day, list) ->
@@ -238,13 +267,14 @@ class MainActivity : ComponentActivity() {
     Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).clip(RoundedCornerShape(20.dp)).combinedClickable(onClick = onClick, onLongClick = onLongClick, onLongClickLabel = "选择消息"), shape = RoundedCornerShape(20.dp), color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = .6f) else MaterialTheme.colorScheme.surfaceContainerLowest, border = BorderStroke(.75.dp, if (selected) MaterialTheme.colorScheme.primary.copy(alpha = .5f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = .65f))) {
         Column(Modifier.padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (selected) Icon(Icons.Outlined.CheckCircle, "已选择", Modifier.size(28.dp), tint = MaterialTheme.colorScheme.primary) else TopicIcon(m.topic, 28)
+                if (selected) Icon(Icons.Outlined.CheckCircle, "已选择", Modifier.size(28.dp), tint = MaterialTheme.colorScheme.primary) else MessageIcon(m, 28)
                 Text(topic?.label ?: m.topic, Modifier.weight(1f).padding(start = 9.dp), fontSize = 12.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (m.priority >= 4) { Spacer(Modifier.width(8.dp)); Text("需要关注", Modifier.clip(RoundedCornerShape(5.dp)).background(MaterialTheme.colorScheme.error.copy(alpha = .07f)).padding(horizontal = 6.dp, vertical = 3.dp), fontSize = 10.sp, lineHeight = 14.sp, color = MaterialTheme.colorScheme.error) }
                 Text(timeLabel(m.time), Modifier.padding(start = 10.dp), fontSize = 11.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (!m.read) Box(Modifier.padding(start = 8.dp).size(5.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
             }
             Text(m.title, Modifier.padding(top = 12.dp), fontSize = 17.sp, lineHeight = 26.sp, fontWeight = if (m.read) FontWeight.Medium else FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (m.tags.isNotEmpty()) Text(m.tags.joinToString(" ") { Tags.display(it) }, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
             Text(Protocol.preview(m.body), Modifier.padding(top = 8.dp), fontSize = 14.sp, lineHeight = 23.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
@@ -264,11 +294,12 @@ class MainActivity : ComponentActivity() {
         TopAppBar(title = { Text("消息", fontSize = 14.sp) }, navigationIcon = { IconButton(onClick = back) { Icon(Icons.Outlined.ArrowBack, "返回") } }, actions = { IconButton(onClick = delete) { Icon(Icons.Outlined.DeleteOutline, "删除消息", Modifier.size(20.dp)) }; IconButton(onClick = { clipboard.setText(AnnotatedString(m.body)); copied = true }) { Icon(if (copied) Icons.Outlined.Check else Icons.Outlined.ContentCopy, if (copied) "已复制" else "复制正文", Modifier.size(20.dp)) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background))
     }) { padding ->
         Column(Modifier.padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(top = 8.dp, bottom = 40.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) { TopicIcon(m.topic); Text(topic?.label ?: m.topic, Modifier.padding(start = 10.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium); Spacer(Modifier.weight(1f)); if (m.id.startsWith("demo-")) Text("演示消息", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            Row(verticalAlignment = Alignment.CenterVertically) { MessageIcon(m); Text(topic?.label ?: m.topic, Modifier.padding(start = 10.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium); Spacer(Modifier.weight(1f)); if (m.id.startsWith("demo-")) Text("演示消息", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             SelectionContainerCompat { Text(m.title, Modifier.padding(top = 18.dp), fontSize = 26.sp, lineHeight = 36.sp, letterSpacing = (-.4).sp, fontWeight = FontWeight.SemiBold) }
             Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Outlined.Schedule, null, Modifier.size(13.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant); Text("  " + SimpleDateFormat("M 月 d 日 · HH:mm", Locale.CHINA).format(Date(m.time * 1000)), fontSize = 12.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); if (m.priority >= 4) Text("    /    高优先级", fontSize = 12.sp, color = MaterialTheme.colorScheme.error) }
             HorizontalDivider(Modifier.padding(vertical = 24.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .7f))
             MarkdownBody(m.body, m.markdown)
+            MessageExtras(m)
             HorizontalDivider(Modifier.padding(top = 36.dp, bottom = 18.dp), color = MaterialTheme.colorScheme.outlineVariant)
             Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Outlined.CheckCircleOutline, null, Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant); Text("  已保存在本机 · 可离线阅读", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
@@ -336,12 +367,12 @@ class MainActivity : ComponentActivity() {
             SettingsGroup {
                 SettingRow(Icons.Outlined.Send, if (testing) "正在发送…" else "发送测试通知", testStatus.ifBlank { "向第一个订阅主题发送一条测试消息" }, {
                     if (!testing) {
-                        if (s.topics.isEmpty()) testStatus = "请先添加一个订阅主题"
+                        if (s.activeTopics.isEmpty()) testStatus = "请先添加一个订阅主题"
                         else {
                             testing = true; testStatus = ""
                             scope.launch {
                                 val result = withContext(Dispatchers.IO) { runCatching {
-                                    val req = Request.Builder().url(s.server.url + "/" + s.topics.first().name).header("Title", "Perch test").header("Markdown", "yes").apply { if (s.server.token.isNotBlank()) header("Authorization", "Bearer ${s.server.token}") }.post("这是一条来自 **栖信** 的测试通知。".toRequestBody()).build()
+                                    val req = Request.Builder().url(s.server.url + "/" + s.activeTopics.first().name).header("Title", "Perch test").header("Markdown", "yes").apply { if (s.server.token.isNotBlank()) header("Authorization", "Bearer ${s.server.token}") }.post("这是一条来自 **栖信** 的测试通知。".toRequestBody()).build()
                                     OkHttpClient.Builder().callTimeout(20, java.util.concurrent.TimeUnit.SECONDS).build().newCall(req).execute().use { if (!it.isSuccessful) error("HTTP ${it.code}") }
                                 } }
                                 testing = false; testStatus = if (result.isSuccess) "已发送，请查看收件箱与系统通知" else "发送失败：${result.exceptionOrNull()?.message?.take(80)}，请检查服务和发布权限"
@@ -362,13 +393,13 @@ class MainActivity : ComponentActivity() {
     Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(20.dp), verticalAlignment = Alignment.CenterVertically) { Icon(icon, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.primary); Column(Modifier.weight(1f).padding(horizontal = 14.dp)) { Text(title, fontSize = 15.sp, lineHeight = 22.sp); Text(subtitle, Modifier.padding(top = 5.dp), fontSize = 12.sp, lineHeight = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis) }; Icon(Icons.Outlined.ChevronRight, null, Modifier.size(17.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
 }
 
-@Composable private fun ServerDialog(server: Server, dismiss: () -> Unit, save: (Server) -> Unit) {
+@Composable internal fun ServerDialog(server: Server, dismiss: () -> Unit, save: (Server) -> Unit) {
     var url by remember { mutableStateOf(server.url.ifBlank { "https://ntfy.sh" }) }
     var token by remember { mutableStateOf(server.token) }
     var error by remember { mutableStateOf("") }
     AlertDialog(onDismissRequest = dismiss, icon = { Icon(Icons.Outlined.CloudQueue, null) }, title = { Text("连接 ntfy") }, text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("沿用你现有的服务。令牌通过 Android Keystore 加密保存在本机。", fontSize = 13.sp, lineHeight = 21.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        OutlinedTextField(value = url, onValueChange = { url = it; error = "" }, label = { Text("服务地址") }, placeholder = { Text("https://ntfy.example.com") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
+        OutlinedTextField(value = url, onValueChange = { url = it; error = "" }, label = { Text("服务地址") }, placeholder = { Text("https://ntfy.example.com") }, singleLine = true, enabled = server.url.isBlank(), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
         OutlinedTextField(value = token, onValueChange = { token = it }, label = { Text("访问令牌（可选）") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
         if (url.trim().startsWith("http://")) Text("HTTP 连接不会加密消息和令牌，建议使用 HTTPS。", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
         if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
@@ -379,6 +410,9 @@ class MainActivity : ComponentActivity() {
     var label by remember { mutableStateOf(topic?.label.orEmpty()) }
     var muted by remember { mutableStateOf(topic?.muted ?: false) }
     var error by remember { mutableStateOf("") }
+    var minPriority by remember { mutableIntStateOf(topic?.minPriority ?: 1) }
+    var notifyTags by remember { mutableStateOf(topic?.notifyTags.orEmpty()) }
+    var allowBroadcast by remember { mutableStateOf(topic?.allowBroadcast ?: false) }
     var confirmRemove by remember { mutableStateOf(false) }
     if (confirmRemove && topic != null) { AlertDialog(onDismissRequest = { confirmRemove = false }, title = { Text("移除订阅？") }, text = { Text("将停止接收「${topic.label}」的新消息。本地消息会保留，重新订阅后可继续查看。") }, confirmButton = { TextButton(onClick = { remove(topic.name) }) { Text("移除", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton(onClick = { confirmRemove = false }) { Text("取消") } }); return }
     AlertDialog(onDismissRequest = dismiss, title = { Text(if (topic == null) "添加主题" else "编辑订阅") }, text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -386,9 +420,14 @@ class MainActivity : ComponentActivity() {
         OutlinedTextField(value = name, onValueChange = { name = it; error = "" }, label = { Text("主题名") }, enabled = topic == null, singleLine = true, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth())
         OutlinedTextField(value = label, onValueChange = { label = it }, label = { Text("显示名称（可选）") }, singleLine = true, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth())
         Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("静音", fontSize = 14.sp); Text("保留消息，关闭该主题的系统提醒", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Switch(checked = muted, onCheckedChange = { muted = it }) }
+        Text("最低提醒优先级：" + minPriority + "（低于此级别仍会保存）", fontSize = 12.sp)
+        Slider(minPriority.toFloat(), { minPriority = it.toInt() }, valueRange = 1f..5f, steps = 3)
+        OutlinedTextField(notifyTags, { notifyTags = it }, label = { Text("仅提醒这些标签（逗号分隔，可留空）") }, modifier = Modifier.fillMaxWidth())
+        Row { Checkbox(allowBroadcast, { allowBroadcast = it }); Text("允许按钮发送 Android 广播", Modifier.padding(top = 12.dp), fontSize = 12.sp) }
+        if (allowBroadcast) Text("仅在信任此主题发送方时开启，可用于 Tasker 自动化。", fontSize = 12.sp)
         if (topic != null) TextButton(onClick = { confirmRemove = true }) { Icon(Icons.Outlined.DeleteOutline, null, Modifier.size(17.dp), tint = MaterialTheme.colorScheme.error); Text("  移除订阅", color = MaterialTheme.colorScheme.error) }
         if (error.isNotEmpty()) Text(error, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
-    } }, confirmButton = { Button(onClick = { val n = name.trim(); when { !Protocol.topic(n) -> error = "主题名需为 1–64 位字母、数字、下划线或短横线，且不能是服务保留名称。"; topic == null && topics.any { it.name == n } -> error = "这个主题已经订阅过了。"; else -> save(Topic(n, label.trim().ifBlank { n }, muted, topic?.joined ?: System.currentTimeMillis() / 1000)) } }) { Text(if (topic == null) "订阅" else "保存") } }, dismissButton = { TextButton(onClick = dismiss) { Text("取消") } })
+    } }, confirmButton = { Button(onClick = { val n = name.trim(); when { !Protocol.topic(n) -> error = "主题名需为 1–64 位字母、数字、下划线或短横线，且不能是服务保留名称。"; topic == null && topics.any { it.name == n } -> error = "这个主题已经订阅过了。"; else -> save(Topic(n, label.trim().ifBlank { n }, muted, topic?.joined ?: System.currentTimeMillis() / 1000, topic?.server.orEmpty(), minPriority, notifyTags.trim(), allowBroadcast)) } }) { Text(if (topic == null) "订阅" else "保存") } }, dismissButton = { TextButton(onClick = dismiss) { Text("取消") } })
 }
 private fun timeLabel(time: Long): String { val delta = System.currentTimeMillis() / 1000 - time; return when { delta < 60 -> "刚刚"; delta < 3600 -> "${delta / 60} 分钟前"; dayLabel(time) == "今天" -> SimpleDateFormat("HH:mm", Locale.CHINA).format(Date(time * 1000)); else -> SimpleDateFormat("MM/dd", Locale.CHINA).format(Date(time * 1000)) } }
 private fun dayLabel(time: Long): String { val fmt = SimpleDateFormat("yyyyMMdd", Locale.CHINA); val day = fmt.format(Date(time * 1000)); return when (day) { fmt.format(Date()) -> "今天"; fmt.format(Date(System.currentTimeMillis() - 86400000)) -> "昨天"; else -> SimpleDateFormat("M 月 d 日", Locale.CHINA).format(Date(time * 1000)) } }

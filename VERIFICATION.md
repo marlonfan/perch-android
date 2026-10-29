@@ -16,7 +16,9 @@
 
 - PASS — ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintRelease --offline，31 项 JVM 测试（0 failure / 0 error）、Debug APK 与 Release Lint；日志：logs/review-fixes-final-build.log。
 
-未压缩长期防重放元数据：保留处理记录避免服务端缓存复活旧消息；安全压缩需要独立的主题水位和同秒边界设计。本版按 Reviewer 初审判断作为非阻断的已知限制。
+2026-10-29，Reviewer（Orca Worker）复审通过，无新增发布阻断问题；完整复审结论见 docs/review-0.5.0.md。
+
+未压缩长期防重放元数据：保留处理记录避免服务端缓存复活旧消息；安全压缩需要独立的主题水位和同秒边界设计。本版已获 Reviewer 复审接受延期，作为非阻断的已知限制。
 
 ## 0.4.0 删除与关闭接收修复
 

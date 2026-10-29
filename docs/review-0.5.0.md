@@ -124,3 +124,17 @@
 - P3-6 延后微优化：Emoji 小映射初始化及限额缓存遍历目前不改变电源/网络策略，不阻止本版。
 
 新增 4 项针对审查修正的 JVM 测试，总计 31 项。未执行本地模拟器或实体手机测试。
+
+## 快速复审结果（2026-10-29，基线 e600f60 → f31d67c）
+
+- 终态：**通过，无新增发布阻断问题**。P2-1~P2-6 均已按建议修复并有测试或行为闭环；P2-7 延期接受（代码已注 TODO，VERIFICATION.md 已记为已知限制）；P3-1/2/3/5 已处理或文档化，P3-4 保留游标为有意选择并已说明，P3-6 延期微优化可接受。
+- P2-1 ✅：HTTP 完成后才 `finish()`（`Interactions.kt` 回调内 `isFinishing/isDestroyed` 守卫 + `progress.dismiss()`）；重建经 `savedInstanceState` 直接转详情不重发；manifest 增 `configChanges` 防旋转重建。三条“完成才结束、不重发、失败进详情”闭环成立。
+- P2-2 ✅：`readAll` 成功后才逐条 `cancel` 当前服务可见消息（`MainActivity.kt`），失败保留原状；与单条 `open` 语义一致。
+- P2-3 ✅：服务 Chip 切换显式重置 `topic` 为新服务首个订阅或空（`Publishing.kt`），守卫 `serverUrl != item.url`；不再发错服务。
+- P2-4 ✅：新增 `updateServer` 只更新不选中（`Data.kt`），新增服务仍走 `server()` 选中；`ServerManager` 成功才 `dismiss/sync`。
+- P2-5 ✅：`Store.update` 返回 Boolean，加密失败保留旧状态并置 `storageError`；解密失败以 `lockedToken/lockedActions` 原密文保留，`encode` 不覆写（`Protocol.kt:encode` 用 `lockedToken.ifBlank{encrypt}` / `lockedActions` 直写），恢复密钥后测试证实可恢复；锁定服务不参与接收（`NotificationService` 三处过滤）、`Publisher.send` 拒发并提示；UI 在状态栏/设置/详情三处提示。测试 `unreadableCredentialsStayEncryptedAcrossUnrelatedChanges` + `legacyUnreadableTokenSurvivesMigration` 覆盖往返与迁移。
+- P2-6 ✅：订阅滑杆改为 2–5 floor 2，文案明确“优先级 1 仅保存”；与 `NotificationService` 的 `>=2` 硬门限一致；Release Notes 已同步。
+- P2-7 接受延期 ✅：`MessageArchive` 注释已写明裁剪风险（按可见 1000 裁 `processed` 会复活缓存旧消息），需后续按主题水位/同秒边界+迁移设计；慢性增长不影响本版。
+- P3-2 ✅：HTTP 方法白名单（GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS），空 copy 禁用按钮 + 执行期 `require`；P3-3 ✅：`Protocol.subscription` 纯 JVM 解析（IPv6/端口/子路径/编码主题/display 截断 128 + 恶意输入拒绝）且有测试；P3-1/P3-5 ✅ 已文档化（README/Release Notes）；P3-4 ✅ 有意保留游标（说明充分）；P3-6 延期可接受。
+- 非阻断观察（0.5.1 可选）：Keystore 损坏期间 `Store.insert` 的 `check` 抛错会跳出当次流收集走重连退避（游标不前移 ✅ 但状态文案显示网络问题）；建议后续对单条入库做 `runCatching`，失败仅跳过该条并保持 storageError 提示，避免整流重建。不影响本版发布。
+- Gate（Lead 日志引用）：PASS — `./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintRelease --offline` — 31 tests（0 failure/error）、Debug APK、Release Lint — 日志 `logs/review-fixes-final-build.log`；PASS — `git diff --cached --check` — 无空白错误 — 日志 `logs/review-fixes-diff-check.log`。

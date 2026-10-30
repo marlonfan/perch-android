@@ -219,24 +219,29 @@ class MainActivity : ComponentActivity() {
                     IconButton(onClick = { delete(messages.filter { it.key in selected }) }, enabled = selected.isNotEmpty()) { Icon(Icons.Outlined.DeleteOutline, "删除所选消息", tint = if (selected.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error) }
                 }
             } else {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                Row(Modifier.clip(RoundedCornerShape(24.dp)).background(MaterialTheme.colorScheme.surfaceContainerLow).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    FilterPill("全部 ${messages.size}", !onlyUnread) { onlyUnread = false }
-                    FilterPill("未读 ${messages.count { !it.read }}", onlyUnread) { onlyUnread = true }
-                }
-                Spacer(Modifier.weight(1f))
-                Box {
-                    TextButton(onClick = { menu = true }, contentPadding = PaddingValues(start = 8.dp)) { Text(topics.find { it.name == filter }?.label ?: "所有主题", fontSize = 12.sp, maxLines = 1); Icon(Icons.Outlined.KeyboardArrowDown, null, Modifier.size(16.dp)) }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text("所有主题") }, onClick = { filter = ""; menu = false })
-                        topics.forEach { topic -> DropdownMenuItem(text = { Text(topic.label) }, onClick = { filter = topic.name; menu = false }) }
-                        HorizontalDivider()
-                        DropdownMenuItem(text = { Text("全部标为已读") }, leadingIcon = { Icon(Icons.Outlined.DoneAll, null) }, enabled = messages.any { !it.read }, onClick = { readAll(); menu = false })
-                        DropdownMenuItem(text = { Text("搜索消息") }, leadingIcon = { Icon(Icons.Outlined.Search, null) }, onClick = { searching = true; menu = false })
-                        DropdownMenuItem(text = { Text("选择消息") }, leadingIcon = { Icon(Icons.Outlined.Checklist, null) }, enabled = visible.isNotEmpty(), onClick = { selecting = true; menu = false })
+                Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)) {
+                    Row(Modifier.clip(RoundedCornerShape(24.dp)).background(MaterialTheme.colorScheme.surfaceContainerLow).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        FilterPill("全部 ${messages.size}", !onlyUnread) { onlyUnread = false }
+                        FilterPill("未读 ${messages.count { !it.read }}", onlyUnread) { onlyUnread = true }
+                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.weight(1f)) {
+                            TextButton(onClick = { menu = true }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(topics.find { it.name == filter }?.label ?: "所有主题", modifier = Modifier.weight(1f, fill = false), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis); Icon(Icons.Outlined.KeyboardArrowDown, null, Modifier.size(16.dp)) }
+                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                DropdownMenuItem(text = { Text("所有主题") }, onClick = { filter = ""; menu = false })
+                                topics.forEach { topic -> DropdownMenuItem(text = { Text(topic.label) }, onClick = { filter = topic.name; menu = false }) }
+                                HorizontalDivider()
+                                DropdownMenuItem(text = { Text("搜索消息") }, leadingIcon = { Icon(Icons.Outlined.Search, null) }, onClick = { searching = true; menu = false })
+                                DropdownMenuItem(text = { Text("选择消息") }, leadingIcon = { Icon(Icons.Outlined.Checklist, null) }, enabled = visible.isNotEmpty(), onClick = { selecting = true; menu = false })
+                            }
+                        }
+                        TextButton(onClick = readAll, enabled = messages.any { !it.read }, shape = RoundedCornerShape(8.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                            Icon(Icons.Outlined.DoneAll, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("全部标为已读", fontSize = 12.sp)
+                        }
                     }
                 }
-            }
             }
         }
         if (searching) item { OutlinedTextField(query, { query = it }, label = { Text("搜索标题、正文和标签") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp), trailingIcon = { IconButton(onClick = { query = ""; searching = false }) { Icon(Icons.Outlined.Close, "关闭搜索") } }) }

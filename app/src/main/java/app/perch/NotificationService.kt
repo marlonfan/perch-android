@@ -10,6 +10,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.LinkProperties
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -17,6 +18,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.*
 import okhttp3.OkHttpClient
+import okhttp3.ConnectionPool
+import okhttp3.Dns
 import okhttp3.Request
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.util.concurrent.TimeUnit
@@ -27,13 +30,16 @@ class NotificationService : Service() {
     private var job: Job? = null
     private val store get() = (application as PerchApp).store
     private val client = OkHttpClient.Builder().connectTimeout(20, TimeUnit.SECONDS).readTimeout(120, TimeUnit.SECONDS).build()
-    private val network = MutableStateFlow<Network?>(null)
+    private val networkState = DefaultNetworkState<Network, LinkProperties>()
     private val resumeGeneration = MutableStateFlow(0)
     private lateinit var connectivity: ConnectivityManager
     private var registered = false
     private val callback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(value: Network) { network.value = value }
-        override fun onLost(value: Network) { if (network.value == value) network.value = null }
+        override fun onAvailable(value: Network) { networkState.available(value) }
+        override fun onLost(value: Network) { networkState.lost(value) }
+        override fun onLinkPropertiesChanged(value: Network, properties: LinkProperties) {
+            networkState.linkPropertiesChanged(value, properties)
+        }
     }
     private val idleReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -63,46 +69,64 @@ class NotificationService : Service() {
         if (job?.isActive == true) return START_STICKY
         job = scope.launch {
             val configurations = store.flow.map { s -> s.servers.filter { server -> server.enabled && server.lockedToken.isBlank() && s.topics.any { it.server == server.url } }.sortedBy { it.url }.map { server -> Connection(server, s.topics.filter { it.server == server.url }.map { it.name }.sorted()) } }.distinctUntilChanged()
-            combine(configurations, network, resumeGeneration) { configuration, currentNetwork, _ -> configuration to currentNetwork }.collectLatest { (configurations, currentNetwork) ->
+            combine(configurations, networkState.flow, resumeGeneration) { configuration, currentNetwork, _ -> configuration to currentNetwork }.collectLatest { (configurations, currentNetwork) ->
                 if (configurations.isEmpty()) { stopSelf(); return@collectLatest }
                 if (currentNetwork == null) { configurations.forEach { report(it.server.url, "等待网络恢复") }; return@collectLatest }
-                coroutineScope { configurations.forEach { configuration -> launch {
-                var attempt = 0
-                while (currentCoroutineContext().isActive) {
-                val started = SystemClock.elapsedRealtime()
-                var code: Int? = null
-                var retryAfter: Long? = null
+                // Keep DNS and sockets on the same app-default network (including VPN).
+                // A fresh pool prevents reuse of routes established before a TUN/DNS change.
+                val sessionClient = client.newBuilder()
+                    .connectionPool(ConnectionPool())
+                    .socketFactory(currentNetwork.network.socketFactory)
+                    .dns(object : Dns {
+                        override fun lookup(hostname: String) = currentNetwork.network.getAllByName(hostname).toList()
+                    })
+                    .build()
                 try {
-                    report(configuration.server.url, "正在连接…")
-                    stream(configuration).collect { event ->
-                        if (event is StreamEvent.Open) report(configuration.server.url, "已连接")
-                        if (event is StreamEvent.Line) {
-                            val m = runCatching { Protocol.parse(event.text, configuration.server.url) }.getOrNull() ?: return@collect
-                            val topic = store.value.topicFor(m) ?: return@collect
-                            val known = !MessageArchive.accepts(store.value, m)
-                            val before = store.value.messages.filter { it.server == m.server && it.topic == m.topic && it.sequenceId == m.sequenceId }
-                            val fresh = store.insert(m)
-                            if (!known && store.value.sequences.any { it.server == m.server && it.topic == m.topic && it.sequenceId == m.sequenceId && it.id == m.id } && (fresh || m.event != "message")) {
-                                before.forEach { cancel(this@NotificationService, it) }
-                                if (m.event != "message") cancel(this@NotificationService, m)
-                                if (fresh && topic.shouldNotify(m) && m.time >= topic.joined && m.priority >= 2) notify(this@NotificationService, m, topic)
+                    coroutineScope {
+                        configurations.forEach { configuration ->
+                            launch {
+                                var attempt = 0
+                                while (currentCoroutineContext().isActive) {
+                                    val started = SystemClock.elapsedRealtime()
+                                    var code: Int? = null
+                                    var retryAfter: Long? = null
+                                    try {
+                                        report(configuration.server.url, "正在连接…")
+                                        stream(configuration, sessionClient).collect { event ->
+                                            if (event is StreamEvent.Open) report(configuration.server.url, "已连接")
+                                            if (event is StreamEvent.Line) {
+                                                val m = runCatching { Protocol.parse(event.text, configuration.server.url) }.getOrNull() ?: return@collect
+                                                val topic = store.value.topicFor(m) ?: return@collect
+                                                val known = !MessageArchive.accepts(store.value, m)
+                                                val before = store.value.messages.filter { it.server == m.server && it.topic == m.topic && it.sequenceId == m.sequenceId }
+                                                val fresh = store.insert(m)
+                                                if (!known && store.value.sequences.any { it.server == m.server && it.topic == m.topic && it.sequenceId == m.sequenceId && it.id == m.id } && (fresh || m.event != "message")) {
+                                                    before.forEach { cancel(this@NotificationService, it) }
+                                                    if (m.event != "message") cancel(this@NotificationService, m)
+                                                    if (fresh && topic.shouldNotify(m) && m.time >= topic.joined && m.priority >= 2) notify(this@NotificationService, m, topic)
+                                                }
+                                                store.advance(configuration.server.url, m.topic, m.time)
+                                            }
+                                        }
+                                        report(configuration.server.url, "连接中断，正在重连")
+                                    } catch (e: CancellationException) {
+                                        throw e
+                                    } catch (e: Exception) {
+                                        report(configuration.server.url, if (e is ConnectionFailure) e.message!! else ReceptionPolicy.failureStatus(e))
+                                        if (e is ConnectionFailure) { code = e.statusCode; retryAfter = e.retryAfter }
+                                    }
+                                    if (SystemClock.elapsedRealtime() - started >= 30_000) attempt = 0
+                                    val wait = ReceptionPolicy.retryMillis(attempt++, code, retryAfter)
+                                    // Positive jitter never retries before the server's Retry-After.
+                                    delay(wait + Random.nextLong(0, (wait / 5).coerceAtLeast(1)))
+                                }
                             }
-                            store.advance(configuration.server.url, m.topic, m.time)
                         }
                     }
-                    report(configuration.server.url, "连接中断，正在重连")
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    report(configuration.server.url, if (e is ConnectionFailure) e.message!! else "网络不可用，稍后自动重连")
-                    if (e is ConnectionFailure) { code = e.statusCode; retryAfter = e.retryAfter }
+                } finally {
+                    // collectLatest waits for stream cancellation before disposing this pool.
+                    sessionClient.connectionPool.evictAll()
                 }
-                if (SystemClock.elapsedRealtime() - started >= 30_000) attempt = 0
-                val wait = ReceptionPolicy.retryMillis(attempt++, code, retryAfter)
-                // Positive jitter never retries before the server's Retry-After.
-                delay(wait + Random.nextLong(0, (wait / 5).coerceAtLeast(1)))
-                }
-                } } }
             }
         }
         return START_STICKY
@@ -111,11 +135,11 @@ class NotificationService : Service() {
         store.connectionStatuses.update { it + (server to status) }
         if (store.value.server.url == server) store.status.value = status
     }
-    private fun stream(configuration: Connection): Flow<StreamEvent> = callbackFlow {
+    private fun stream(configuration: Connection, sessionClient: OkHttpClient): Flow<StreamEvent> = callbackFlow {
         val since = configuration.names.minOf { name -> store.cursor(configuration.server.url, name).let { if (it > 0) (it - 1).coerceAtLeast(1) else 1L } }
         val url = (configuration.server.url + "/${configuration.names.joinToString(",")}/json").toHttpUrl().newBuilder().addQueryParameter("since", since.toString()).build()
         val request = Request.Builder().url(url).apply { if (configuration.server.token.isNotBlank()) header("Authorization", "Bearer ${configuration.server.token}") }.build()
-        val activeCall = client.newCall(request)
+        val activeCall = sessionClient.newCall(request)
         val reader = launch(Dispatchers.IO) {
             try {
                 activeCall.execute().use { response ->
@@ -136,9 +160,7 @@ class NotificationService : Service() {
     override fun onDestroy() {
         if (registered) { connectivity.unregisterNetworkCallback(callback); unregisterReceiver(idleReceiver) }
         job?.cancel(); scope.cancel()
-        // Closing idle TLS sockets may send close_notify. Service callbacks run on main.
-        // This executor survives cancellation of the reception scope.
-        client.dispatcher.executorService.execute { client.connectionPool.evictAll() }
+        // Each session disposes its own pool in the IO coroutine's finally block.
         store.status.value = "已暂停"; super.onDestroy()
     }
     private class ConnectionFailure(message: String, val statusCode: Int? = null, val retryAfter: Long? = null) : Exception(message)

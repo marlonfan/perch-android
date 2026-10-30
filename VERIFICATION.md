@@ -1,5 +1,32 @@
 # 验证记录
 
+## 0.5.2 发布门禁
+
+2026-10-30。versionName 0.5.2 / versionCode 7；两项功能均经现有 Reviewer（Orca Worker）独立审查通过，无 P1/P2 阻断。签名构建、APK 签名验证与 GitHub Release 上传由标签 v0.5.2 对应的 Android Release 工作流执行，最终发布结果以该工作流及 Release 附件为准。
+
+- PASS — `./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintRelease --offline --console=plain`；更新版本号后的 Debug 构建、37 项 JVM 测试与 Release Lint；日志：logs/release-0.5.2-build.log。
+
+## 0.5.2 收件箱「全部标为已读」入口恢复
+
+2026-10-30。原入口藏在「所有主题」下拉菜单；现移到收件箱筛选区下方，右侧直接显示带 DoneAll 图标的「全部标为已读」文字按钮，无未读时禁用。主题筛选与操作使用独立一行，长主题名可省略，避免与全部/未读筛选争抢窄屏宽度。沿用当前服务的 Store.readAll、演示状态更新与成功后通知清理，不修改其他服务的已读状态。
+
+- PASS — `./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintRelease --offline --console=plain`；Debug APK、37 项 JVM 测试与 Release Lint；日志：logs/read-all-build.log。
+- PASS — `git diff --check`；日志：logs/read-all-diff-check.log。
+
+更新 tools/settings_smoke.py 为直接点击可见按钮。本轮没有设备，未运行该模拟器脚本；320 dp 实际渲染及交互仍需设备复测。Reviewer（Orca Worker）审查通过，无 P1/P2 阻断；报告：docs/review-read-all.md。
+
+## 0.5.2 Clash / TUN 网络变化修复
+
+2026-10-30。需求、应用侧回归复现与验证边界见 docs/network-reception.md。未连接 Android 设备、未启动模拟器、未改手机或 Clash 配置、未向 ntfy 主题发送消息。
+
+- EXPECTED FAIL — `./gradlew :app:testDebugUnitTest --tests app.perch.DefaultNetworkStateTest --offline --console=plain`；原有回调状态逻辑的两项回归测试均失败，捕获同网络 DNS 变化未更新接收状态、DNS/路由就绪前开始连接；日志：logs/clash-regression-red.log。
+- PASS — `./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintRelease --offline --console=plain`；Debug APK、37 项 JVM 测试（0 failure / 0 error）与 Release Lint；日志：logs/clash-fix-final-build.log、logs/clash-fix-test-results.log。
+- PASS — `git diff --check`；日志：logs/clash-fix-diff-check.log。
+
+修复默认网络 LinkProperties 变化监听、配置就绪前连接、跨网络复用连接池与 DNS/socket 网络不一致风险；新增 DNS / 超时 / 连接 / TLS 错误分类。需要真机复测 Clash 已开启启动接收，以及运行中切换 TUN、DNS、Wi-Fi/移动网络；当前不宣称已确认用户手机的唯一根因或已完成真机验证。
+
+Reviewer（Orca Worker）审查通过，无 P1/P2 阻断；独立复跑 37 项 JVM 测试通过，日志：logs/clash-review-test.log。报告：docs/review-clash-network.md。真机与 Clash 的实际回调、Fake-IP 解析及用户故障归因仍待设备复测。
+
 ## 0.5.1 标题 Emoji 与消息操作区
 
 2026-10-29，基线 v0.5.0。需求与布局决定见 docs/message-presentation.md。按用户要求未运行本地模拟器、未操作实体手机、未向 ntfy 主题发送消息。

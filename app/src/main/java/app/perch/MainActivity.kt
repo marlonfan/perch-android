@@ -18,6 +18,9 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -28,14 +31,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.*
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -197,12 +203,11 @@ class MainActivity : ComponentActivity() {
     var onlyUnread by rememberSaveable { mutableStateOf(false) }
     var filter by rememberSaveable { mutableStateOf("") }
     var query by rememberSaveable { mutableStateOf("") }
-    var searching by rememberSaveable { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf(emptySet<MessageKey>()) }
     val visible = messages.filter { (!onlyUnread || !it.read) && (filter.isEmpty() || it.topic == filter) && (query.isBlank() || listOf(it.title, it.body, it.tags.joinToString(" ")).any { text -> text.contains(query, ignoreCase = true) }) }
-    val showReadAll = !selecting && messages.any { !it.read }
+    val hasUnread = messages.any { !it.read }
     val currentTopic = topics.find { it.name == filter }?.label ?: "所有主题"
     LaunchedEffect(topics.map { it.name }) {
         if (filter.isNotEmpty() && topics.none { it.name == filter }) filter = ""
@@ -214,7 +219,7 @@ class MainActivity : ComponentActivity() {
     }
     BackHandler(selecting) { selecting = false; selected = emptySet() }
     Box(Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = if (showReadAll) 88.dp else 24.dp)) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
             item {
                 if (demo) DemoBanner(configure) else if (!enabled || status != "已连接") ConnectionBanner(status, enabled, settings)
             }
@@ -227,11 +232,12 @@ class MainActivity : ComponentActivity() {
                         IconButton(onClick = { delete(messages.filter { it.key in selected }) }, enabled = selected.isNotEmpty()) { Icon(Icons.Outlined.DeleteOutline, "删除所选消息", tint = if (selected.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error) }
                     }
                 } else {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(Modifier.weight(1f).clip(RoundedCornerShape(24.dp)).background(MaterialTheme.colorScheme.surfaceContainerLow).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                            FilterPill("全部 ${messages.size}", !onlyUnread, Modifier.weight(1f)) { onlyUnread = false }
-                            FilterPill("未读 ${messages.count { !it.read }}", onlyUnread, Modifier.weight(1f)) { onlyUnread = true }
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(Modifier.width(104.dp).clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceContainerLow).padding(2.dp)) {
+                            FilterPill("全部", !onlyUnread, Modifier.weight(1f).semantics { contentDescription = "全部 ${messages.size}" }) { onlyUnread = false }
+                            FilterPill("未读", onlyUnread, Modifier.weight(1f).semantics { contentDescription = "未读 ${messages.count { !it.read }}" }) { onlyUnread = true }
                         }
+                        InboxSearchField(query, { query = it }, Modifier.weight(1f))
                         Box {
                             IconButton(onClick = { menu = true }, modifier = Modifier.semantics { stateDescription = currentTopic }) {
                                 BadgedBox(badge = { if (filter.isNotEmpty()) Badge() }) {
@@ -242,38 +248,50 @@ class MainActivity : ComponentActivity() {
                                 DropdownMenuItem(text = { Text("所有主题") }, trailingIcon = { if (filter.isEmpty()) Icon(Icons.Outlined.Check, null) }, onClick = { filter = ""; menu = false })
                                 topics.forEach { topic -> DropdownMenuItem(text = { Text(topic.label, maxLines = 2, overflow = TextOverflow.Ellipsis) }, trailingIcon = { if (filter == topic.name) Icon(Icons.Outlined.Check, null) }, onClick = { filter = topic.name; menu = false }) }
                                 HorizontalDivider()
+                                DropdownMenuItem(text = { Text("全部标为已读") }, leadingIcon = { Icon(Icons.Outlined.DoneAll, null) }, enabled = hasUnread, onClick = { menu = false; readAll() })
                                 if (!demo) DropdownMenuItem(text = { Text("发送消息") }, leadingIcon = { Icon(Icons.Outlined.Edit, null) }, onClick = { menu = false; publish() })
-                                DropdownMenuItem(text = { Text("搜索消息") }, leadingIcon = { Icon(Icons.Outlined.Search, null) }, onClick = { searching = true; menu = false })
                                 DropdownMenuItem(text = { Text("选择消息") }, leadingIcon = { Icon(Icons.Outlined.Checklist, null) }, enabled = visible.isNotEmpty(), onClick = { selecting = true; menu = false })
                             }
                         }
                     }
                 }
             }
-            if (searching) item { OutlinedTextField(query, { query = it }, label = { Text("搜索标题、正文和标签") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp), trailingIcon = { IconButton(onClick = { query = ""; searching = false }) { Icon(Icons.Outlined.Close, "关闭搜索") } }) }
-            if (visible.isEmpty()) item { EmptyState(if (onlyUnread) "暂时没有未读消息" else "让第一条消息，落在这里。", if (demo) "换个筛选条件，看看其他消息。" else "订阅主题后，发送到 ntfy 的消息会出现在这里。", Icons.Outlined.AllInbox) }
+            if (visible.isEmpty()) item { EmptyState(if (query.isNotBlank()) "没有匹配的消息" else if (onlyUnread) "暂时没有未读消息" else "让第一条消息，落在这里。", if (query.isNotBlank()) "换个关键词，或调整主题与未读筛选。" else if (demo) "换个筛选条件，看看其他消息。" else "订阅主题后，发送到 ntfy 的消息会出现在这里。", Icons.Outlined.AllInbox) }
             val groups = visible.groupBy { dayLabel(it.time) }
             groups.forEach { (day, list) ->
                 item { Row(Modifier.fillMaxWidth().padding(start = 26.dp, end = 26.dp, top = 2.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) { Text(day, fontSize = 12.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(" · ${list.size} 条消息", fontSize = 12.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .8f)) } }
                 items(list, key = { it.server + it.id }) { m -> MessageCard(m, topics.find { it.name == m.topic }, selected = m.key in selected, onClick = { if (selecting) selected = if (m.key in selected) selected - m.key else selected + m.key else open(m) }, onLongClick = { selecting = true; selected = selected + m.key }) }
             }
         }
-        if (showReadAll) {
-            TooltipBox(
-                positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
-                tooltip = { PlainTooltip { Text("全部标为已读") } },
-                state = rememberTooltipState(),
-                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)
-            ) {
-                SmallFloatingActionButton(onClick = readAll, shape = RoundedCornerShape(12.dp)) {
-                    Icon(Icons.Outlined.DoneAll, "全部标为已读")
-                }
-            }
-        }
+
     }
 }
 @Composable private fun FilterPill(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Surface(onClick = onClick, modifier = modifier, shape = RoundedCornerShape(20.dp), color = if (selected) MaterialTheme.colorScheme.surfaceContainerLowest else Color.Transparent, shadowElevation = if (selected) 1.dp else 0.dp) { Text(label, Modifier.padding(horizontal = 9.dp, vertical = 9.dp), fontSize = 13.sp, lineHeight = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant) }
+    Surface(onClick = onClick, modifier = modifier.heightIn(min = 48.dp), shape = RoundedCornerShape(14.dp), color = if (selected) MaterialTheme.colorScheme.surfaceContainerLowest else Color.Transparent, shadowElevation = if (selected) 1.dp else 0.dp) { Text(label, Modifier.padding(horizontal = 4.dp, vertical = 8.dp), fontSize = 12.sp, lineHeight = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant) }
+}
+@Composable private fun InboxSearchField(query: String, update: (String) -> Unit, modifier: Modifier = Modifier) {
+    val focus = LocalFocusManager.current
+    BasicTextField(
+        value = query,
+        onValueChange = update,
+        modifier = modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceContainerLow).semantics { contentDescription = "搜索消息" },
+        textStyle = TextStyle(fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface),
+        singleLine = true,
+        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { focus.clearFocus() }),
+        decorationBox = { inner ->
+            Row(Modifier.heightIn(min = 48.dp).padding(start = 10.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.Search, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.width(6.dp))
+                Box(Modifier.weight(1f)) {
+                    if (query.isEmpty()) Text("搜索", fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    inner()
+                }
+                if (query.isNotEmpty()) IconButton(onClick = { update("") }, modifier = Modifier.size(40.dp)) { Icon(Icons.Outlined.Close, "清除搜索", Modifier.size(18.dp)) }
+            }
+        }
+    )
 }
 @Composable private fun DemoBanner(onClick: () -> Unit) {
     Surface(onClick = onClick, modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 20.dp), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = .7f)) {

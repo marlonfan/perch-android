@@ -1,5 +1,9 @@
 # 验证记录
 
+## 0.5.4 顶部搜索与全部已读菜单
+
+2026-10-30，基线 fc7f4ad（v0.5.3）。用户要求取消独立悬浮框，把全部已读放进主题按钮展开菜单。移除 FAB 及其底部额外留白，菜单保留双勾和完整文字，无未读时禁用；readAll lambda 与当前服务全量范围不变，不修改 TLS 或网络逻辑。versionName 0.5.4 / versionCode 9。本轮不运行模拟器、不操作手机、不向主题发送消息。本地 Debug 构建、41 项 JVM 测试与 Release Lint 通过，日志：logs/release-0.5.4-build.log、logs/release-0.5.4-tests.log。Python 脚本语法与 git diff --check 通过，日志：logs/release-0.5.4-script-check.log、logs/release-0.5.4-diff-check.log。后续按用户要求缩小全部/未读切换并新增同一行常显搜索框，搜索标题、正文及标签，支持清除和无结果提示。前述构建日志只覆盖菜单调整，搜索变更后的 Debug 构建、41 项 JVM 测试与 Release Lint 通过，日志：logs/inbox-search-build.log、logs/inbox-search-tests.log；脚本语法与diff检查通过，日志：logs/inbox-search-script-check.log、logs/inbox-search-diff-check.log。需求与布局见 docs/inbox-search.md，Reviewer（Orca Worker）对菜单与搜索合并的最终 diff 审查通过，无 P1/P2 阻断；独立复跑 41 项 JVM 测试通过，日志：logs/inbox-search-review-test.log。最终报告：docs/review-read-all-menu.md。发布流程由 v0.5.4 标签触发 GitHub Actions 执行签名构建及附件上传，结果以工作流与 Release 附件为准。
+
 ## 0.5.3 发布门禁
 
 2026-10-30。versionName 0.5.3 / versionCode 8；网络回退、TLS 诊断与紧凑收件箱经 Reviewer（Orca Worker）独立审查通过，无 P1/P2 阻断。签名构建、APK 签名验证与 GitHub Release 上传由标签 v0.5.3 对应的 Android Release 工作流执行，最终发布结果以该工作流及 Release 附件为准。手机 Clash/TLS 效果仍待设备复测。

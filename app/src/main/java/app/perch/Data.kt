@@ -48,6 +48,8 @@ class Store(context: Context) {
     val flow = state.asStateFlow()
     val status = MutableStateFlow("尚未连接")
     val connectionStatuses = MutableStateFlow<Map<String, String>>(emptyMap())
+    // Safe, in-memory summaries only; retain the last failure while automatic retries run.
+    val connectionDiagnostics = MutableStateFlow<Map<String, String>>(emptyMap())
     val value get() = state.value
     private fun load(): Snapshot {
         val root = runCatching { JSONObject(prefs.getString("data", "{}")!!) }.getOrDefault(JSONObject())

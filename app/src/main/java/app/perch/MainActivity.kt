@@ -31,6 +31,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.*
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -90,6 +92,7 @@ class MainActivity : ComponentActivity() {
     LaunchedEffect(storageError) { if (storageError.isNotBlank()) android.widget.Toast.makeText(context, storageError, android.widget.Toast.LENGTH_LONG).show() }
     val legacyStatus by store.status.collectAsState()
     val statuses by store.connectionStatuses.collectAsState()
+    val diagnostics by store.connectionDiagnostics.collectAsState()
     val status = if (!s.server.enabled) "已暂停" else if (s.server.lockedToken.isNotBlank()) "凭证无法解密，请重新输入令牌" else statuses[s.server.url] ?: legacyStatus
     var composing by remember { mutableStateOf(false) }
     LaunchedEffect(s.server.url) { composing = false }
@@ -156,7 +159,6 @@ class MainActivity : ComponentActivity() {
     Scaffold(
         snackbarHost = { SnackbarHost(snack) },
         containerColor = MaterialTheme.colorScheme.background,
-        floatingActionButton = { if (!demo && tab == 0) SmallFloatingActionButton(onClick = { composing = true }) { Icon(Icons.Outlined.Edit, "发送消息") } },
         bottomBar = {
             Column(Modifier.navigationBarsPadding()) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .6f))
@@ -170,9 +172,9 @@ class MainActivity : ComponentActivity() {
     ) { padding ->
         AnimatedContent(targetState = tab, modifier = Modifier.padding(padding), label = "page") { selected ->
             when (selected) {
-                0 -> Inbox(messages, topics, demo, status, { serverDialog = true }, ::open, { if (demo) demoRead = Demo.messages.map { it.id } else if (store.readAll()) messages.forEach { NotificationService.cancel(context, it) } }, s.server.enabled, { tab = 2 }, { pendingDeletion = it })
+                0 -> Inbox(messages, topics, demo, status, { serverDialog = true }, ::open, { if (demo) demoRead = Demo.messages.map { it.id } else if (store.readAll()) messages.forEach { NotificationService.cancel(context, it) } }, s.server.enabled, { tab = 2 }, { pendingDeletion = it }, { composing = true })
                 1 -> Subscriptions(topics, demo, s.server, status, { serverDialog = true }, { if (demo) serverDialog = true else addTopic = true }, { if (demo) serverDialog = true else topicDialog = it })
-                else -> SettingsPage(s, status, demo, storageError, { serverDialog = true }, { enabled -> store.enable(enabled); if (enabled) connect() else NotificationService.sync(context) }, { store.appearance(it) }, { tab = 1 })
+                else -> SettingsPage(s, status, demo, storageError, diagnostics[s.server.url].orEmpty(), { serverDialog = true }, { enabled -> store.enable(enabled); if (enabled) connect() else NotificationService.sync(context) }, { store.appearance(it) }, { tab = 1 })
             }
         }
     }
@@ -191,7 +193,7 @@ class MainActivity : ComponentActivity() {
         action()
     }
 }
-@Composable private fun Inbox(messages: List<Message>, topics: List<Topic>, demo: Boolean, status: String, configure: () -> Unit, open: (Message) -> Unit, readAll: () -> Unit, enabled: Boolean, settings: () -> Unit, delete: (List<Message>) -> Unit) {
+@Composable private fun Inbox(messages: List<Message>, topics: List<Topic>, demo: Boolean, status: String, configure: () -> Unit, open: (Message) -> Unit, readAll: () -> Unit, enabled: Boolean, settings: () -> Unit, delete: (List<Message>) -> Unit, publish: () -> Unit) {
     var onlyUnread by rememberSaveable { mutableStateOf(false) }
     var filter by rememberSaveable { mutableStateOf("") }
     var query by rememberSaveable { mutableStateOf("") }
@@ -200,61 +202,78 @@ class MainActivity : ComponentActivity() {
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf(emptySet<MessageKey>()) }
     val visible = messages.filter { (!onlyUnread || !it.read) && (filter.isEmpty() || it.topic == filter) && (query.isBlank() || listOf(it.title, it.body, it.tags.joinToString(" ")).any { text -> text.contains(query, ignoreCase = true) }) }
+    val showReadAll = !selecting && messages.any { !it.read }
+    val currentTopic = topics.find { it.name == filter }?.label ?: "所有主题"
+    LaunchedEffect(topics.map { it.name }) {
+        if (filter.isNotEmpty() && topics.none { it.name == filter }) filter = ""
+    }
     LaunchedEffect(messages.map { it.key }) {
         val retained = selected.intersect(messages.map { it.key }.toSet())
         if (selected.isNotEmpty() && retained.isEmpty()) selecting = false
         selected = retained
     }
     BackHandler(selecting) { selecting = false; selected = emptySet() }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
-        item {
-            if (demo) DemoBanner(configure) else if (!enabled || status != "已连接") ConnectionBanner(status, enabled, settings)
-        }
-        item {
-            if (selecting) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp).heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { selecting = false; selected = emptySet() }) { Icon(Icons.Outlined.Close, "取消选择") }
-                    Text(if (selected.isEmpty()) "选择消息" else "已选 ${selected.size} 条", Modifier.weight(1f).padding(start = 4.dp), fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                    IconButton(onClick = { selected = if (visible.all { it.key in selected }) emptySet() else visible.map { it.key }.toSet() }, enabled = visible.isNotEmpty()) { Icon(Icons.Outlined.SelectAll, "全选消息") }
-                    IconButton(onClick = { delete(messages.filter { it.key in selected }) }, enabled = selected.isNotEmpty()) { Icon(Icons.Outlined.DeleteOutline, "删除所选消息", tint = if (selected.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error) }
-                }
-            } else {
-                Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)) {
-                    Row(Modifier.clip(RoundedCornerShape(24.dp)).background(MaterialTheme.colorScheme.surfaceContainerLow).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                        FilterPill("全部 ${messages.size}", !onlyUnread) { onlyUnread = false }
-                        FilterPill("未读 ${messages.count { !it.read }}", onlyUnread) { onlyUnread = true }
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = if (showReadAll) 88.dp else 24.dp)) {
+            item {
+                if (demo) DemoBanner(configure) else if (!enabled || status != "已连接") ConnectionBanner(status, enabled, settings)
+            }
+            item {
+                if (selecting) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp).heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { selecting = false; selected = emptySet() }) { Icon(Icons.Outlined.Close, "取消选择") }
+                        Text(if (selected.isEmpty()) "选择消息" else "已选 ${selected.size} 条", Modifier.weight(1f).padding(start = 4.dp), fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                        IconButton(onClick = { selected = if (visible.all { it.key in selected }) emptySet() else visible.map { it.key }.toSet() }, enabled = visible.isNotEmpty()) { Icon(Icons.Outlined.SelectAll, "全选消息") }
+                        IconButton(onClick = { delete(messages.filter { it.key in selected }) }, enabled = selected.isNotEmpty()) { Icon(Icons.Outlined.DeleteOutline, "删除所选消息", tint = if (selected.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error) }
                     }
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.weight(1f)) {
-                            TextButton(onClick = { menu = true }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(topics.find { it.name == filter }?.label ?: "所有主题", modifier = Modifier.weight(1f, fill = false), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis); Icon(Icons.Outlined.KeyboardArrowDown, null, Modifier.size(16.dp)) }
+                } else {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(Modifier.weight(1f).clip(RoundedCornerShape(24.dp)).background(MaterialTheme.colorScheme.surfaceContainerLow).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                            FilterPill("全部 ${messages.size}", !onlyUnread, Modifier.weight(1f)) { onlyUnread = false }
+                            FilterPill("未读 ${messages.count { !it.read }}", onlyUnread, Modifier.weight(1f)) { onlyUnread = true }
+                        }
+                        Box {
+                            IconButton(onClick = { menu = true }, modifier = Modifier.semantics { stateDescription = currentTopic }) {
+                                BadgedBox(badge = { if (filter.isNotEmpty()) Badge() }) {
+                                    Icon(Icons.Outlined.FilterList, "筛选主题", tint = if (filter.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary)
+                                }
+                            }
                             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                                DropdownMenuItem(text = { Text("所有主题") }, onClick = { filter = ""; menu = false })
-                                topics.forEach { topic -> DropdownMenuItem(text = { Text(topic.label) }, onClick = { filter = topic.name; menu = false }) }
+                                DropdownMenuItem(text = { Text("所有主题") }, trailingIcon = { if (filter.isEmpty()) Icon(Icons.Outlined.Check, null) }, onClick = { filter = ""; menu = false })
+                                topics.forEach { topic -> DropdownMenuItem(text = { Text(topic.label, maxLines = 2, overflow = TextOverflow.Ellipsis) }, trailingIcon = { if (filter == topic.name) Icon(Icons.Outlined.Check, null) }, onClick = { filter = topic.name; menu = false }) }
                                 HorizontalDivider()
+                                if (!demo) DropdownMenuItem(text = { Text("发送消息") }, leadingIcon = { Icon(Icons.Outlined.Edit, null) }, onClick = { menu = false; publish() })
                                 DropdownMenuItem(text = { Text("搜索消息") }, leadingIcon = { Icon(Icons.Outlined.Search, null) }, onClick = { searching = true; menu = false })
                                 DropdownMenuItem(text = { Text("选择消息") }, leadingIcon = { Icon(Icons.Outlined.Checklist, null) }, enabled = visible.isNotEmpty(), onClick = { selecting = true; menu = false })
                             }
                         }
-                        TextButton(onClick = readAll, enabled = messages.any { !it.read }, shape = RoundedCornerShape(8.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
-                            Icon(Icons.Outlined.DoneAll, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("全部标为已读", fontSize = 12.sp)
-                        }
                     }
                 }
             }
+            if (searching) item { OutlinedTextField(query, { query = it }, label = { Text("搜索标题、正文和标签") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp), trailingIcon = { IconButton(onClick = { query = ""; searching = false }) { Icon(Icons.Outlined.Close, "关闭搜索") } }) }
+            if (visible.isEmpty()) item { EmptyState(if (onlyUnread) "暂时没有未读消息" else "让第一条消息，落在这里。", if (demo) "换个筛选条件，看看其他消息。" else "订阅主题后，发送到 ntfy 的消息会出现在这里。", Icons.Outlined.AllInbox) }
+            val groups = visible.groupBy { dayLabel(it.time) }
+            groups.forEach { (day, list) ->
+                item { Row(Modifier.fillMaxWidth().padding(start = 26.dp, end = 26.dp, top = 2.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) { Text(day, fontSize = 12.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(" · ${list.size} 条消息", fontSize = 12.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .8f)) } }
+                items(list, key = { it.server + it.id }) { m -> MessageCard(m, topics.find { it.name == m.topic }, selected = m.key in selected, onClick = { if (selecting) selected = if (m.key in selected) selected - m.key else selected + m.key else open(m) }, onLongClick = { selecting = true; selected = selected + m.key }) }
+            }
         }
-        if (searching) item { OutlinedTextField(query, { query = it }, label = { Text("搜索标题、正文和标签") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp), trailingIcon = { IconButton(onClick = { query = ""; searching = false }) { Icon(Icons.Outlined.Close, "关闭搜索") } }) }
-        if (visible.isEmpty()) item { EmptyState(if (onlyUnread) "暂时没有未读消息" else "让第一条消息，落在这里。", if (demo) "换个筛选条件，看看其他消息。" else "订阅主题后，发送到 ntfy 的消息会出现在这里。", Icons.Outlined.AllInbox) }
-        val groups = visible.groupBy { dayLabel(it.time) }
-        groups.forEach { (day, list) ->
-            item { Row(Modifier.fillMaxWidth().padding(start = 26.dp, end = 26.dp, top = 2.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) { Text(day, fontSize = 12.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(" · ${list.size} 条消息", fontSize = 12.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .8f)) } }
-            items(list, key = { it.server + it.id }) { m -> MessageCard(m, topics.find { it.name == m.topic }, selected = m.key in selected, onClick = { if (selecting) selected = if (m.key in selected) selected - m.key else selected + m.key else open(m) }, onLongClick = { selecting = true; selected = selected + m.key }) }
+        if (showReadAll) {
+            TooltipBox(
+                positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                tooltip = { PlainTooltip { Text("全部标为已读") } },
+                state = rememberTooltipState(),
+                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)
+            ) {
+                SmallFloatingActionButton(onClick = readAll, shape = RoundedCornerShape(12.dp)) {
+                    Icon(Icons.Outlined.DoneAll, "全部标为已读")
+                }
+            }
         }
     }
 }
-@Composable private fun FilterPill(label: String, selected: Boolean, onClick: () -> Unit) {
-    Surface(onClick = onClick, shape = RoundedCornerShape(20.dp), color = if (selected) MaterialTheme.colorScheme.surfaceContainerLowest else Color.Transparent, shadowElevation = if (selected) 1.dp else 0.dp) { Text(label, Modifier.padding(horizontal = 13.dp, vertical = 9.dp), fontSize = 13.sp, lineHeight = 20.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant) }
+@Composable private fun FilterPill(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Surface(onClick = onClick, modifier = modifier, shape = RoundedCornerShape(20.dp), color = if (selected) MaterialTheme.colorScheme.surfaceContainerLowest else Color.Transparent, shadowElevation = if (selected) 1.dp else 0.dp) { Text(label, Modifier.padding(horizontal = 9.dp, vertical = 9.dp), fontSize = 13.sp, lineHeight = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant) }
 }
 @Composable private fun DemoBanner(onClick: () -> Unit) {
     Surface(onClick = onClick, modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 20.dp), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = .7f)) {
@@ -338,8 +357,9 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable private fun SettingsPage(s: Snapshot, status: String, demo: Boolean, storageError: String, configure: () -> Unit, enable: (Boolean) -> Unit, appearance: (String) -> Unit, subscriptions: () -> Unit) {
+@Composable private fun SettingsPage(s: Snapshot, status: String, demo: Boolean, storageError: String, diagnostic: String, configure: () -> Unit, enable: (Boolean) -> Unit, appearance: (String) -> Unit, subscriptions: () -> Unit) {
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     var appearanceDialog by remember { mutableStateOf(false) }
     var testStatus by remember { mutableStateOf("") }
     var testing by remember { mutableStateOf(false) }
@@ -368,6 +388,13 @@ class MainActivity : ComponentActivity() {
             RowDivider()
             Row(Modifier.fillMaxWidth().clickable(enabled = !demo) { enable(!s.server.enabled) }.padding(20.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Outlined.Sensors, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.primary); Column(Modifier.weight(1f).padding(horizontal = 14.dp)) { Text("后台接收", fontSize = 15.sp, lineHeight = 22.sp); Text(if (demo) "连接服务后开启" else status, Modifier.padding(top = 5.dp), fontSize = 12.sp, lineHeight = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Switch(checked = s.server.enabled && !demo, enabled = !demo, onCheckedChange = enable) }
             RowDivider(); SettingRow(Icons.Outlined.Layers, "订阅管理", if (demo) "添加你的第一个主题" else "${s.topics.size} 个主题", subscriptions)
+            if (diagnostic.isNotBlank()) {
+                RowDivider()
+                SettingRow(Icons.Outlined.ContentCopy, "最近连接错误 · 点击复制", diagnostic, {
+                    clipboard.setText(AnnotatedString(diagnostic))
+                    android.widget.Toast.makeText(context, "诊断信息已复制", android.widget.Toast.LENGTH_SHORT).show()
+                })
+            }
         } }
         item { SectionLabel("通知与外观") }
         item { SettingsGroup {

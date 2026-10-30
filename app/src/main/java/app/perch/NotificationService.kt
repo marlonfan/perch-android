@@ -19,7 +19,6 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.*
 import okhttp3.OkHttpClient
 import okhttp3.ConnectionPool
-import okhttp3.Dns
 import okhttp3.Request
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.util.concurrent.TimeUnit
@@ -72,14 +71,11 @@ class NotificationService : Service() {
             combine(configurations, networkState.flow, resumeGeneration) { configuration, currentNetwork, _ -> configuration to currentNetwork }.collectLatest { (configurations, currentNetwork) ->
                 if (configurations.isEmpty()) { stopSelf(); return@collectLatest }
                 if (currentNetwork == null) { configurations.forEach { report(it.server.url, "等待网络恢复") }; return@collectLatest }
-                // Keep DNS and sockets on the same app-default network (including VPN).
-                // A fresh pool prevents reuse of routes established before a TUN/DNS change.
+                // Let Android apply the application's current VPN, DNS and proxy policy.
+                // Only replace the pool; explicitly binding sockets/resolution is unnecessary
+                // for default-network traffic and may behave differently across VPN clients.
                 val sessionClient = client.newBuilder()
                     .connectionPool(ConnectionPool())
-                    .socketFactory(currentNetwork.network.socketFactory)
-                    .dns(object : Dns {
-                        override fun lookup(hostname: String) = currentNetwork.network.getAllByName(hostname).toList()
-                    })
                     .build()
                 try {
                     coroutineScope {
@@ -112,7 +108,9 @@ class NotificationService : Service() {
                                     } catch (e: CancellationException) {
                                         throw e
                                     } catch (e: Exception) {
-                                        report(configuration.server.url, if (e is ConnectionFailure) e.message!! else ReceptionPolicy.failureStatus(e))
+                                        val status = if (e is ConnectionFailure) e.message!! else ReceptionPolicy.failureStatus(e)
+                                        store.connectionDiagnostics.update { it + (configuration.server.url to status) }
+                                        report(configuration.server.url, status)
                                         if (e is ConnectionFailure) { code = e.statusCode; retryAfter = e.retryAfter }
                                     }
                                     if (SystemClock.elapsedRealtime() - started >= 30_000) attempt = 0

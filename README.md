@@ -4,7 +4,9 @@
 
 ## 体验首版
 
-当前版本 **0.5.2**，Android 8.0 及以上可用。在 [GitHub Releases](https://github.com/marlonfan/perch-android/releases/latest) 下载 `Perch-0.5.2.apk`，直接覆盖安装已有体验版，保留连接配置和本地消息。首次打开有明确标记的演示消息，不会订阅或发布到任何远程主题。
+当前版本 **0.5.3**，Android 8.0 及以上可用。在 [GitHub Releases](https://github.com/marlonfan/perch-android/releases/latest) 下载 `Perch-0.5.3.apk`，直接覆盖安装已有体验版，保留连接配置和本地消息。首次打开有明确标记的演示消息，不会订阅或发布到任何远程主题。
+
+0.5.3 恢复 Android 默认 DNS/socket 联网路径，保留网络变化重连与独立连接池；细分 TLS 失败，并可在设置复制最近连接错误。收件箱顶部收回单行，主题改为右侧筛选图标，全部已读改为右下角双勾悬浮图标，仅有未读且未进入多选时显示；发送消息收进筛选菜单。41 项单元测试及 Reviewer（Orca Worker）审查通过；手机 Clash 下 TLS 效果待复测，详情见 docs/tls-compact-inbox.md。
 
 0.5.2 将「全部标为已读」从主题菜单移回收件箱筛选区，直接显示文字按钮；后台接收在 VPN/TUN、DNS 或路由配置变化时重建连接，并分别提示 DNS、超时、连接及 TLS 错误。自动检查与 Reviewer 审查已通过，Clash 真机效果仍待复测，详见 VERIFICATION.md。
 
@@ -48,7 +50,7 @@
 - action 支持 view（打开链接）、http（回执/接口操作）、copy（复制指定内容）和 broadcast（Android 自动化）。消息详情显示执行状态与失败原因。
 - 附件卡片显示名称、类型、大小及有效期；点“下载附件”后可预览、打开或分享。
 - 在设置的“消息服务”管理多个服务器；当前选中的服务决定收件箱和订阅页，所有启用服务都在后台接收。
-- 收件箱右下角按钮可发送消息，选择目标服务、主题、标题、正文、优先级、标签、Markdown、附件 URL 或系统文件。也可从其他 App 分享文字或单个文件至栖信，确认目标后点击发送；一次分享一个文件。
+- 收件箱右上角筛选菜单的“发送消息”可发送消息，选择目标服务、主题、标题、正文、优先级、标签、Markdown、附件 URL 或系统文件。也可从其他 App 分享文字或单个文件至栖信，确认目标后点击发送；一次分享一个文件。
 - 在主题菜单选择“搜索消息”搜索标题、正文和标签。编辑订阅可设置最低提醒优先级及标签条件；筛掉的提醒仍保存在收件箱。声音和振动由 Android 系统通知渠道设置。
 - ntfy:// 主题链接需要确认后订阅，支持 display 名称与 secure=false（HTTP）。
 
@@ -78,7 +80,7 @@
 
 ## 自动发布
 
-`.github/workflows/android-release.yml` 在推送 `v*` 标签时运行 37 项单元测试、Release Lint、签名构建与 APK 签名验证，然后创建 GitHub Release，附 APK 和 `SHA256SUMS.txt`。标签必须与 `app/build.gradle.kts` 中的版本相符，并提供 `release-notes/<版本>.md`。手动运行工作流只生成构建产物。
+`.github/workflows/android-release.yml` 在推送 `v*` 标签时运行 41 项单元测试、Release Lint、签名构建与 APK 签名验证，然后创建 GitHub Release，附 APK 和 `SHA256SUMS.txt`。标签必须与 `app/build.gradle.kts` 中的版本相符，并提供 `release-notes/<版本>.md`。手动运行工作流只生成构建产物。
 
 签名材料保存在仓库 Actions Secrets：`ANDROID_SIGNING_KEYSTORE`（Base64 keystore）、`ANDROID_SIGNING_STORE_PASSWORD`、`ANDROID_SIGNING_KEY_ALIAS`、`ANDROID_SIGNING_KEY_PASSWORD`。构建机临时解码，结束后清理；源码和构建产物不包含 keystore。当前沿用首版体验签名以支持覆盖安装。
 
@@ -86,7 +88,7 @@
 
 ## 验证
 
-37 项单元测试覆盖服务地址 / 主题校验、ntfy 事件解析、Markdown 结构与摘要、错误退避、服务端限流、删除持久化与缓存重放，以及网络配置变化、接收任务替换和连接错误分类。
+41 项单元测试覆盖服务地址 / 主题校验、ntfy 事件解析、Markdown 结构与摘要、错误退避、服务端限流、删除持久化与缓存重放，以及网络配置变化、接收任务替换和连接错误分类。
 
 `tools/ntfy_fixture.py` 是仅绑定本机的 ntfy 协议测试服务，不是生产服务端。`tools/android_smoke.py` 在显式选择的 Android 模拟器上操作真实 APK，覆盖页面、主题切换、服务接入、令牌加密、后台接收、系统通知跳转、事件去重、重启补收、离线阅读和暂停偏好。它会改变测试设备上栖信的配置，因此应只用于专用模拟器。
 
@@ -105,6 +107,6 @@ python tools/android_smoke.py integration
 
 `tools/power_smoke.py` 只允许独立的 `emulator-5556`，使用本机 8788 端口协议 fixture，检查连接复用、锁屏省电、获豁免的强制深度 Doze、空闲重连次数、断网等待、恢复补收与 HTTP 401 重试。脚本退出时恢复原演示配置、网络与电源设置。模拟器 CPU / batterystats 是逻辑观察，不能换算为实体手机的每日耗电。
 
-`tools/settings_smoke.py` 在同一专用演示设备验证纯图标导航、收件箱直接显示的「全部标为已读」，以及 Android 原生电池豁免确认的打开与取消。
+`tools/settings_smoke.py` 在同一专用演示设备验证纯图标导航、右下角「全部标为已读」悬浮图标、紧凑主题筛选，以及 Android 原生电池豁免确认的打开与取消。
 
 `tools/deletion_smoke.py` 在专用模拟器检查单条删除、确认取消、多选全选、批量删除、系统通知清理、重启缓存重放及新消息接收，并恢复原演示偏好。

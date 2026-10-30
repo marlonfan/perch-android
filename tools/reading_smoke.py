@@ -86,7 +86,7 @@ def run():
         ui.assert_text('连接 ntfy')
         assert not any(n.attrib.get('text') == 'PERCH' for n in ui.nodes())
         ui.adb('shell', 'wm', 'size', '840x1867')
-        ui.assert_text('所有主题')
+        ui.assert_text('筛选主题')
         ui.screenshot('11-inbox-320dp')
         ui.tap_text('新的想法，已经准备就绪。')
         ui.assert_text('项目进展')

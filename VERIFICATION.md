@@ -1,5 +1,24 @@
 # 验证记录
 
+## 0.5.3 发布门禁
+
+2026-10-30。versionName 0.5.3 / versionCode 8；网络回退、TLS 诊断与紧凑收件箱经 Reviewer（Orca Worker）独立审查通过，无 P1/P2 阻断。签名构建、APK 签名验证与 GitHub Release 上传由标签 v0.5.3 对应的 Android Release 工作流执行，最终发布结果以该工作流及 Release 附件为准。手机 Clash/TLS 效果仍待设备复测。
+
+- PASS — `./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintRelease --offline --console=plain`；版本号更新后的 Debug 构建、41 项 JVM 测试与 Release Lint；日志：logs/release-0.5.3-build.log。
+
+## 0.5.3 TLS 后续排查与紧凑收件箱
+
+2026-10-30，基线 v0.5.2。用户确认 Clash 在手机上运行，浏览器可以打开同一服务。开发机完成目标 HTTPS 系统信任链、主机名校验及健康接口探测（HTTP 200），日志：logs/ntfy-marlon-tls-probe.log、logs/ntfy-marlon-health-*.log。该结果不代表手机 Clash 路径；本轮没有 Android 设备，未复现真机异常链，不宣称已确认其根因或完全修复。细节见 docs/tls-compact-inbox.md。
+
+撤回新增的显式 Network DNS/socket 绑定，恢复 Android 默认联网路径；保留网络变化重连与每会话独立池。细分 TLS 证书链、有效期、身份、协议、握手和 IO 错误，并在设置保留可复制的最近失败摘要；保持原证书与主机名校验，不拼接异常原文。收件箱改为单行全部/未读加主题筛选图标，右下仅在有未读且非多选时显示全部已读悬浮图标；发送消息移入菜单。
+
+- EXPECTED FAIL — `./gradlew :app:testDebugUnitTest --tests app.perch.ReceptionPolicyTest --offline --console=plain`；新增的两项错误分类回归在旧逻辑下失败，证明原提示未区分证书原因与普通握手中断；日志：logs/tls-classification-red.log。这不是手机故障的复现。
+- PASS — `./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintRelease --offline --console=plain`；Debug APK、41 项 JVM 测试（0 failure / 0 error）与 Release Lint；日志：logs/tls-compact-final-build.log、logs/tls-compact-final-test-results.log。
+- PASS — `python3 -m py_compile tools/settings_smoke.py tools/reading_smoke.py`；日志：logs/tls-compact-script-check.log。
+- PASS — `git diff --check`；日志：logs/tls-compact-diff-check.log。
+
+更新两份模拟器脚本的悬浮图标与主题筛选断言，本轮未运行模拟器或操作手机，未向主题发送消息。UI 渲染、Clash 证书行为与默认联网回退效果待设备验证。Reviewer（Orca Worker）审查通过，无 P1/P2 阻断；独立复跑 41 项 JVM 测试通过，日志：logs/tls-compact-review-test.log。报告：docs/review-tls-compact.md。
+
 ## 0.5.2 发布门禁
 
 2026-10-30。versionName 0.5.2 / versionCode 7；两项功能均经现有 Reviewer（Orca Worker）独立审查通过，无 P1/P2 阻断。签名构建、APK 签名验证与 GitHub Release 上传由标签 v0.5.2 对应的 Android Release 工作流执行，最终发布结果以该工作流及 Release 附件为准。

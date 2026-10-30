@@ -1,4 +1,6 @@
-# Clash / TUN 下的后台接收
+# 0.5.2 Clash / TUN 下的后台接收
+
+本文保留 0.5.2 的实现记录。用户后续反馈仍出现 TLS 错误；0.5.3 撤回显式 Network DNS/socket 绑定，恢复系统默认联网，并补细诊断。最新决策与验证边界见 [TLS 与紧凑收件箱](tls-compact-inbox.md)。
 
 2026-10-30。用户反馈：Clash 开启时无法连接，关闭后恢复；怀疑 TUN 或 DNS 变化。
 

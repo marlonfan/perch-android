@@ -1,5 +1,17 @@
 # 验证记录
 
+## 0.6.0 持续提醒、应用内更新与开源
+
+2026-11-01。基线 `f8df7df`（0.5.5），versionName 0.6.0 / versionCode 11。新增按主题启用的长振动及最高优先级持续提醒；新增主动检查 GitHub 正式版、下载进度与取消/重试、安装包校验及系统安装交接。网络、DNS/TLS 与现有收件箱布局保持原行为。详细边界见 `docs/priority-alerts.md`、`docs/in-app-updates.md`，需求见 `docs/priority-update-spec.md`。
+
+- PASS — `./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintRelease --offline --console=plain`；Debug 构建、62 项 JVM 测试（0 failure / 0 error）、Release lint；日志 `logs/features-final-gates.log`。
+- PASS — `gh release view v0.5.5 --json tagName,assets`；现有资产为 `Perch-0.5.5.apk` 与 `SHA256SUMS.txt`，符合更新模块命名策略；日志 `logs/updater-release-assets.json`。尚不等于手机上的下载/安装通过。
+- PASS — 开源历史启发式扫描：133 个可达历史 blob，未发现匹配规则的真实密钥或敏感文件；三处 URL 凭据命中均为 `example.com/example.org` 的测试数据。日志 `logs/open-source-history-audit.log`。扫描不是全面安全保证。
+
+开源准备包含 Apache-2.0、NOTICE、第三方署名和 APK 内许可证、贡献/安全/隐私说明。GitHub visibility、签名 Release 和最终审查状态以实际交付回执为准。
+
+本轮两名开发 Orca Worker 因模型来源用量/凭据错误中断；Lead 接手其未完成草稿，修复后补充测试与文档。尚未将其误计为完成的 Worker 任务。现有 Orca reviewer 做独立审查。未运行模拟器、操作手机或向真实主题发送消息；持续提醒、厂商限制、通知渠道迁移和系统授权/安装页仍需设备验证。
+
 ## 0.5.5 按钮标签居中与发布门禁
 
 2026-11-01。versionName 0.5.5 / versionCode 10，基线86e8475（v0.5.4）。FilterPill 改用显式 Alignment.Center 容器承载全部/未读短标签，移除文字内部偏移，保持48dp触控区域；搜索、主题菜单、数量读屏描述与全部已读范围不变。网络、DNS及TLS代码未改。

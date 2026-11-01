@@ -18,7 +18,7 @@ import javax.crypto.spec.GCMParameterSpec
 
 class PerchApp : Application() {
     lateinit var store: Store
-    override fun onCreate() { super.onCreate(); Tags.load(this); store = Store(this) }
+    override fun onCreate() { super.onCreate(); Tags.load(this); store = Store(this); NotificationService.stopPersistent(this) }
 }
 class Vault {
     private fun key(): SecretKey {
@@ -41,6 +41,7 @@ class Vault {
 }
 
 class Store(context: Context) {
+    private val appContext = context.applicationContext
     private val prefs = context.getSharedPreferences("perch", Context.MODE_PRIVATE)
     private val vault = Vault()
     val storageError = MutableStateFlow("")
@@ -65,11 +66,19 @@ class Store(context: Context) {
             storageError.value = "加密保存失败，已保留原数据，请稍后重试或重新输入凭证。"
             return false
         }
-        prefs.edit().putString("data", root.toString()).remove("token").apply()
+        // Notification cleanup must follow a successful durable write, including on disk failure.
+        if (!prefs.edit().putString("data", root.toString()).remove("token").commit()) {
+            storageError.value = "保存失败，已保留当前消息和提醒，请稍后重试。"
+            return false
+        }
         state.value = s
+        NotificationService.reconcile(appContext, s)
         if (s.servers.none { it.lockedToken.isNotBlank() } && s.messages.none { it.lockedActions.isNotBlank() }) storageError.value = ""
         return true
     }
+    // Serialize posting and cleanup with mutations so an asynchronous icon cannot resurrect
+    // a notification after a successful read/delete or preference change.
+    @Synchronized internal fun withSnapshot(block: (Snapshot) -> Unit) = block(value)
     fun updateServer(server: Server) = update { s -> s.copy(servers = s.servers.map { if (it.url == server.url) server else it }, server = if (s.server.url == server.url) server else s.server) }
     fun server(server: Server) = update { it.copy(server = server, servers = it.servers.filterNot { saved -> saved.url == server.url } + server) }
     fun selectServer(url: String) = update { s -> s.servers.find { it.url == url }?.let { s.copy(server = it) } ?: s }

@@ -126,8 +126,8 @@ class MainActivity : ComponentActivity() {
     }
     fun open(m: Message) {
         opened = m.copy(read = true)
-        if (demo) demoRead = demoRead + m.id else store.read(m.id, m.server)
-        NotificationService.cancel(context, m)
+        if (demo) demoRead = demoRead + m.id
+        if (demo || store.read(m.id, m.server)) NotificationService.cancel(context, m)
     }
     LaunchedEffect(target, s.messages) {
         target?.let { key ->
@@ -190,7 +190,7 @@ class MainActivity : ComponentActivity() {
     }
     if (addTopic || topicDialog != null) TopicDialog(topicDialog, s.activeTopics, { addTopic = false; topicDialog = null }, { topic ->
         if (store.topic(topic)) { addTopic = false; topicDialog = null; if (store.value.server.enabled) connect() }
-    }, { name -> store.removeTopic(name); topicDialog = null; NotificationService.sync(context) })
+    }, { name -> if (store.removeTopic(name)) { topicDialog = null; NotificationService.sync(context) } })
 }
 
 @Composable private fun PageTitle(title: String, action: @Composable () -> Unit = {}) {
@@ -382,6 +382,8 @@ class MainActivity : ComponentActivity() {
 @Composable private fun SettingsPage(s: Snapshot, status: String, demo: Boolean, storageError: String, diagnostic: String, configure: () -> Unit, enable: (Boolean) -> Unit, appearance: (String) -> Unit, subscriptions: () -> Unit) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val updates = app.perch.update.rememberUpdateController()
+    var updateDialog by remember { mutableStateOf(false) }
     var appearanceDialog by remember { mutableStateOf(false) }
     var testStatus by remember { mutableStateOf("") }
     var testing by remember { mutableStateOf(false) }
@@ -444,8 +446,13 @@ class MainActivity : ComponentActivity() {
                 })
             }
         }
+        item { SectionLabel("应用") }
+        item { SettingsGroup {
+            SettingRow(Icons.Outlined.SystemUpdate, "检查更新", "当前版本 ${BuildConfig.VERSION_NAME} · GitHub Releases", { updateDialog = true; updates.check() })
+        } }
         item { Text("栖信 · ${BuildConfig.VERSION_NAME}", Modifier.fillMaxWidth().padding(top = 28.dp), fontSize = 12.sp, lineHeight = 18.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .7f)) }
     }
+    if (updateDialog) app.perch.update.UpdateDialog(updates) { updateDialog = false }
     if (appearanceDialog) AlertDialog(onDismissRequest = { appearanceDialog = false }, title = { Text("外观") }, text = { Column { listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色").forEach { (key, label) -> Row(Modifier.fillMaxWidth().clickable { appearance(key); appearanceDialog = false }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) { RadioButton(selected = s.appearance == key, onClick = { appearance(key); appearanceDialog = false }); Text(label) } } } }, confirmButton = { TextButton(onClick = { appearanceDialog = false }) { Text("完成") } })
 }
 @Composable private fun SectionLabel(text: String) { Text(text, Modifier.padding(start = 26.dp, top = 24.dp, bottom = 12.dp), fontSize = 12.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -475,6 +482,8 @@ class MainActivity : ComponentActivity() {
     var minPriority by remember { mutableIntStateOf((topic?.minPriority ?: 2).coerceAtLeast(2)) }
     var notifyTags by remember { mutableStateOf(topic?.notifyTags.orEmpty()) }
     var allowBroadcast by remember { mutableStateOf(topic?.allowBroadcast ?: false) }
+    var persistentAlert by remember { mutableStateOf(topic?.persistentAlert ?: false) }
+    var longVibration by remember { mutableStateOf((topic?.vibrationVersion ?: 2) >= 2) }
     var confirmRemove by remember { mutableStateOf(false) }
     if (confirmRemove && topic != null) { AlertDialog(onDismissRequest = { confirmRemove = false }, title = { Text("移除订阅？") }, text = { Text("将停止接收「${topic.label}」的新消息。本地消息会保留，重新订阅后可继续查看。") }, confirmButton = { TextButton(onClick = { remove(topic.name) }) { Text("移除", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton(onClick = { confirmRemove = false }) { Text("取消") } }); return }
     AlertDialog(onDismissRequest = dismiss, title = { Text(if (topic == null) "添加主题" else "编辑订阅") }, text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -485,11 +494,21 @@ class MainActivity : ComponentActivity() {
         Text("最低提醒优先级：" + minPriority + "（优先级 1 仅保存，不提醒）", fontSize = 12.sp)
         Slider(minPriority.toFloat(), { minPriority = it.toInt() }, valueRange = 2f..5f, steps = 2)
         OutlinedTextField(notifyTags, { notifyTags = it }, label = { Text("仅提醒这些标签（逗号分隔，可留空）") }, modifier = Modifier.fillMaxWidth())
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) { Text("长振动提醒", fontSize = 14.sp); Text("优先级 4 短振动，5 长振动约 3.5 秒", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            Switch(longVibration, { longVibration = it })
+        }
+        if (topic?.vibrationVersion == 1 && longVibration) Text("保存后为优先级 4/5 启用长短振动，保留原有的声音和重要程度。系统中关闭的通知仍保持关闭。", fontSize = 12.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) { Text("最高优先级持续提醒", fontSize = 14.sp); Text("仅对新到达的优先级 5 消息生效，默认关闭", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            Switch(persistentAlert, { persistentAlert = it })
+        }
+        Text("持续提醒由 Android 重复播放通知声音，部分系统也会重复振动。打开通知栏、打开或清除通知会停止；已读、删除、静音或停用订阅也会停止。受通知权限、渠道设置、勿扰模式和系统限制影响。历史补收不会开始持续提醒。", fontSize = 12.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row { Checkbox(allowBroadcast, { allowBroadcast = it }); Text("允许按钮发送 Android 广播", Modifier.padding(top = 12.dp), fontSize = 12.sp) }
         if (allowBroadcast) Text("仅在信任此主题发送方时开启，可用于 Tasker 自动化。", fontSize = 12.sp)
         if (topic != null) TextButton(onClick = { confirmRemove = true }) { Icon(Icons.Outlined.DeleteOutline, null, Modifier.size(17.dp), tint = MaterialTheme.colorScheme.error); Text("  移除订阅", color = MaterialTheme.colorScheme.error) }
         if (error.isNotEmpty()) Text(error, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
-    } }, confirmButton = { Button(onClick = { val n = name.trim(); when { !Protocol.topic(n) -> error = "主题名需为 1–64 位字母、数字、下划线或短横线，且不能是服务保留名称。"; topic == null && topics.any { it.name == n } -> error = "这个主题已经订阅过了。"; else -> save(Topic(n, label.trim().ifBlank { n }, muted, topic?.joined ?: System.currentTimeMillis() / 1000, topic?.server.orEmpty(), minPriority, notifyTags.trim(), allowBroadcast)) } }) { Text(if (topic == null) "订阅" else "保存") } }, dismissButton = { TextButton(onClick = dismiss) { Text("取消") } })
+    } }, confirmButton = { Button(onClick = { val n = name.trim(); when { !Protocol.topic(n) -> error = "主题名需为 1–64 位字母、数字、下划线或短横线，且不能是服务保留名称。"; topic == null && topics.any { it.name == n } -> error = "这个主题已经订阅过了。"; else -> save(Topic(n, label.trim().ifBlank { n }, muted, topic?.joined ?: System.currentTimeMillis() / 1000, topic?.server.orEmpty(), minPriority, notifyTags.trim(), allowBroadcast, persistentAlert, if (longVibration) 2 else 1)) } }) { Text(if (topic == null) "订阅" else "保存") } }, dismissButton = { TextButton(onClick = dismiss) { Text("取消") } })
 }
 private fun timeLabel(time: Long): String { val delta = System.currentTimeMillis() / 1000 - time; return when { delta < 60 -> "刚刚"; delta < 3600 -> "${delta / 60} 分钟前"; dayLabel(time) == "今天" -> SimpleDateFormat("HH:mm", Locale.CHINA).format(Date(time * 1000)); else -> SimpleDateFormat("MM/dd", Locale.CHINA).format(Date(time * 1000)) } }
 private fun dayLabel(time: Long): String { val fmt = SimpleDateFormat("yyyyMMdd", Locale.CHINA); val day = fmt.format(Date(time * 1000)); return when (day) { fmt.format(Date()) -> "今天"; fmt.format(Date(System.currentTimeMillis() - 86400000)) -> "昨天"; else -> SimpleDateFormat("M 月 d 日", Locale.CHINA).format(Date(time * 1000)) } }

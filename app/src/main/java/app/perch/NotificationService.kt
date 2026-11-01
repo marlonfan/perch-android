@@ -88,9 +88,11 @@ class NotificationService : Service() {
                                     var retryAfter: Long? = null
                                     try {
                                         report(configuration.server.url, "正在连接…")
+                                        var liveAfter: Long? = null
                                         stream(configuration, sessionClient).collect { event ->
                                             if (event is StreamEvent.Open) report(configuration.server.url, "已连接")
                                             if (event is StreamEvent.Line) {
+                                                PriorityAlerts.openTime(event.text)?.let { liveAfter = it }
                                                 val m = runCatching { Protocol.parse(event.text, configuration.server.url) }.getOrNull() ?: return@collect
                                                 val topic = store.value.topicFor(m) ?: return@collect
                                                 val known = !MessageArchive.accepts(store.value, m)
@@ -99,7 +101,7 @@ class NotificationService : Service() {
                                                 if (!known && store.value.sequences.any { it.server == m.server && it.topic == m.topic && it.sequenceId == m.sequenceId && it.id == m.id } && (fresh || m.event != "message")) {
                                                     before.forEach { cancel(this@NotificationService, it) }
                                                     if (m.event != "message") cancel(this@NotificationService, m)
-                                                    if (fresh && topic.shouldNotify(m) && m.time >= topic.joined && m.priority >= 2) notify(this@NotificationService, m, topic)
+                                                    if (fresh && topic.shouldNotify(m) && m.time >= topic.joined && m.priority >= 2) notify(this@NotificationService, m, topic, liveAfter = liveAfter)
                                                 }
                                                 store.advance(configuration.server.url, m.topic, m.time)
                                             }
@@ -158,6 +160,7 @@ class NotificationService : Service() {
     override fun onDestroy() {
         if (registered) { connectivity.unregisterNetworkCallback(callback); unregisterReceiver(idleReceiver) }
         job?.cancel(); scope.cancel()
+        stopPersistent(this)
         // Each session disposes its own pool in the IO coroutine's finally block.
         store.status.value = "已暂停"; super.onDestroy()
     }
@@ -166,7 +169,7 @@ class NotificationService : Service() {
         fun sync(context: Context) {
             val s = (context.applicationContext as PerchApp).store.value
             if (s.servers.any { server -> server.enabled && server.lockedToken.isBlank() && s.topics.any { it.server == server.url } }) ContextCompat.startForegroundService(context, Intent(context, NotificationService::class.java))
-            else { context.stopService(Intent(context, NotificationService::class.java)); (context.applicationContext as PerchApp).store.status.value = if (s.topics.isEmpty()) "等待添加订阅" else "已暂停" }
+            else { stopPersistent(context); context.stopService(Intent(context, NotificationService::class.java)); (context.applicationContext as PerchApp).store.status.value = if (s.topics.isEmpty()) "等待添加订阅" else "已暂停" }
         }
         fun channels(context: Context) {
             val nm = context.getSystemService(NotificationManager::class.java)
@@ -176,11 +179,66 @@ class NotificationService : Service() {
             NotificationManagerCompat.from(context).cancel(m.notificationTag, 2)
             NotificationManagerCompat.from(context).cancel(m.server + ":" + m.id, 2)
         }
-        fun notify(context: Context, m: Message, topic: Topic, alert: Boolean = true, largeIcon: android.graphics.Bitmap? = null) {
+        // Called after a durable write; never posts notifications.
+        fun reconcile(context: Context, snapshot: Snapshot) {
+            val nm = context.getSystemService(NotificationManager::class.java)
+            nm.activeNotifications.filter { it.id == 2 }.forEach { active ->
+                val message = snapshot.messages.find { it.notificationTag == active.tag }
+                val repeating = active.notification.flags and Notification.FLAG_INSISTENT != 0
+                if (message == null || !PriorityAlerts.eligible(snapshot, message) ||
+                    repeating && snapshot.topicFor(message)?.persistentAlert != true) nm.cancel(active.tag, 2)
+            }
+        }
+        fun stopPersistent(context: Context) {
+            val nm = context.getSystemService(NotificationManager::class.java)
+            nm.activeNotifications.filter { it.id == 2 && it.notification.flags and Notification.FLAG_INSISTENT != 0 }
+                .forEach { nm.cancel(it.tag, it.id) }
+        }
+        private fun channel(context: Context, m: Message, topic: Topic): String {
+            val nm = context.getSystemService(NotificationManager::class.java)
+            val legacyId = "topic_" + Resources.digest(m.server + "/" + topic.name).take(16) + "_" + m.priority
+            val pattern = PriorityAlerts.vibration(m.priority).takeIf { topic.vibrationVersion >= 2 }
+            val id = legacyId + if (pattern != null) "_v2" else ""
+            if (nm.getNotificationChannel(id) != null) return id
+            val legacy = nm.getNotificationChannel(legacyId)
+            val importance = legacy?.importance ?: when {
+                m.priority >= 4 -> NotificationManager.IMPORTANCE_HIGH
+                m.priority <= 2 -> NotificationManager.IMPORTANCE_LOW
+                else -> NotificationManager.IMPORTANCE_DEFAULT
+            }
+            val label = when (m.priority) { 5 -> "最高"; 4 -> "高"; 2 -> "安静"; else -> "标准" }
+            nm.createNotificationChannel(NotificationChannel(id, topic.label + " · " + label + if (pattern != null) " · 振动" else "", importance).apply {
+                // Explicit migration preserves non-vibration settings, especially blocked/silent.
+                if (legacy != null) {
+                    setSound(legacy.sound, legacy.audioAttributes)
+                    setShowBadge(legacy.canShowBadge())
+                    enableLights(legacy.shouldShowLights())
+                    lightColor = legacy.lightColor
+                    lockscreenVisibility = legacy.lockscreenVisibility
+                    group = legacy.group
+                }
+                if (pattern != null) { enableVibration(true); vibrationPattern = pattern }
+            })
+            return id
+        }
+        fun notify(context: Context, m: Message, topic: Topic, alert: Boolean = true, largeIcon: android.graphics.Bitmap? = null, liveAfter: Long? = null) {
+            val store = (context.applicationContext as PerchApp).store
+            store.withSnapshot { snapshot ->
+                val current = snapshot.messages.find { it.key == m.key && it.notificationTag == m.notificationTag } ?: return@withSnapshot
+                val currentTopic = snapshot.topicFor(current) ?: return@withSnapshot
+                if (!PriorityAlerts.eligible(snapshot, current)) return@withSnapshot
+                post(context, current, currentTopic, snapshot, alert, largeIcon, liveAfter)
+            }
+        }
+        private fun post(context: Context, m: Message, topic: Topic, snapshot: Snapshot, alert: Boolean, largeIcon: android.graphics.Bitmap?, liveAfter: Long?) {
             if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
-            val importance = when { m.priority >= 4 -> NotificationManager.IMPORTANCE_HIGH; m.priority <= 2 -> NotificationManager.IMPORTANCE_LOW; else -> NotificationManager.IMPORTANCE_DEFAULT }
-            val channel = "topic_" + Resources.digest(m.server + "/" + topic.name).take(16) + "_" + m.priority
-            context.getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(channel, topic.label + " · " + if (m.priority >= 4) "重要" else if (m.priority <= 2) "安静" else "标准", importance))
+            val nm = context.getSystemService(NotificationManager::class.java)
+            if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return
+            val active = nm.activeNotifications.find { it.tag == m.notificationTag && it.id == 2 }
+            // A slow update cannot recreate a dismissed notification or restart playback.
+            // Leave an insistent notification untouched by image-only updates.
+            if (!alert && (active == null || largeIcon != null && active.notification.flags and Notification.FLAG_INSISTENT != 0)) return
+            val channel = channel(context, m, topic)
             val intent = if (m.click.isNotBlank()) Intent(context, InteractionActivity::class.java).putExtra("click", true) else Intent(context, MainActivity::class.java)
             intent.putExtra("message_id", m.id).putExtra("message_server", m.server).setData(android.net.Uri.parse("perch-local://message/" + Resources.digest(m.notificationTag))).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             val pending = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -193,7 +251,9 @@ class NotificationService : Service() {
                 val pi = PendingIntent.getActivity(context, 0, target, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
                 builder.addAction(0, action.label + if (action.state == "running") "…" else "", pi)
             }
-            NotificationManagerCompat.from(context).notify(m.notificationTag, 2, builder.build())
+            val notification = builder.build()
+            if (active == null && PriorityAlerts.persistent(snapshot, m, alert, liveAfter)) notification.flags = notification.flags or Notification.FLAG_INSISTENT
+            NotificationManagerCompat.from(context).notify(m.notificationTag, 2, notification)
             if (largeIcon == null && Protocol.webUrl(m.icon)) Resources.loadNotificationIcon(context, m, topic)
         }
     }

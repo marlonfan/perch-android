@@ -80,7 +80,7 @@ class InteractionActivity : Activity() {
         val m = store.value.messages.find { it.id == intent.getStringExtra("message_id") && it.server == intent.getStringExtra("message_server") }
         if (m == null) { finish(); return }
         if (intent.getBooleanExtra("click", false)) {
-            runCatching { Interactions.open(this, m.click) }.onSuccess { store.read(m.id, m.server); NotificationService.cancel(this, m) }.onFailure { showDetail(m, "链接无法打开，请在消息详情重试") }
+            runCatching { Interactions.open(this, m.click) }.onSuccess { if (store.read(m.id, m.server)) NotificationService.cancel(this, m) }.onFailure { showDetail(m, "链接无法打开，请在消息详情重试") }
             finish(); return
         }
         val action = m.actions.find { it.id == intent.getStringExtra("action_id") }

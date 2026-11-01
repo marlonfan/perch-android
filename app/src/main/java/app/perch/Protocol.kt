@@ -4,7 +4,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class Topic(val name: String, val label: String = name, val muted: Boolean = false, val joined: Long = System.currentTimeMillis() / 1000, val server: String = "", val minPriority: Int = 1, val notifyTags: String = "", val allowBroadcast: Boolean = false)
+data class Topic(val name: String, val label: String = name, val muted: Boolean = false, val joined: Long = System.currentTimeMillis() / 1000, val server: String = "", val minPriority: Int = 1, val notifyTags: String = "", val allowBroadcast: Boolean = false, val persistentAlert: Boolean = false, val vibrationVersion: Int = 2)
 data class Server(val url: String = "", val token: String = "", val enabled: Boolean = false, val lockedToken: String = "")
 data class Attachment(val name: String, val url: String, val type: String = "", val size: Long = 0, val expires: Long = 0)
 data class MessageAction(val id: String, val action: String, val label: String, val url: String = "", val method: String = "POST", val headers: Map<String, String> = emptyMap(), val body: String = "", val clear: Boolean = false, val intent: String = "io.heckel.ntfy.USER_ACTION", val extras: Map<String, String> = emptyMap(), val value: String = "", val state: String = "", val error: String = "")
@@ -112,7 +112,7 @@ internal object SnapshotCodec {
         val legacy = Server(root.optString("url"), legacyToken, root.optBoolean("enabled"), legacyLockedToken)
         val servers = root.optJSONArray("servers").objects().mapNotNull { o -> Protocol.server(o.optString("url"))?.let { run { val sealed = o.optString("token"); val token = runCatching { decrypt(sealed) }; Server(it, token.getOrDefault(""), o.optBoolean("enabled"), if (token.isFailure) sealed else "") } } }.distinctBy { it.url }.ifEmpty { if (legacy.url.isBlank()) emptyList() else listOf(legacy) }
         val selected = servers.find { it.url == legacy.url } ?: servers.firstOrNull() ?: Server()
-        val topics = root.optJSONArray("topics").objects().mapNotNull { t -> t.optString("name").takeIf(Protocol::topic)?.let { Topic(it, t.optString("label").ifBlank { it }, t.optBoolean("muted"), t.optLong("joined"), t.optString("server").ifBlank { legacy.url }, t.optInt("min_priority", 1).coerceIn(1, 5), t.optString("notify_tags"), t.optBoolean("allow_broadcast")) } }
+        val topics = root.optJSONArray("topics").objects().mapNotNull { t -> t.optString("name").takeIf(Protocol::topic)?.let { Topic(it, t.optString("label").ifBlank { it }, t.optBoolean("muted"), t.optLong("joined"), t.optString("server").ifBlank { legacy.url }, t.optInt("min_priority", 1).coerceIn(1, 5), t.optString("notify_tags"), t.optBoolean("allow_broadcast"), t.optBoolean("persistent_alert"), t.optInt("vibration_version", 1).coerceIn(1, 2)) } }
         val messages = root.optJSONArray("messages").objects().mapNotNull { stored -> val m = JSONObject(stored.toString()); runCatching {
             if (m.has("protected_actions")) {
                 val sealed = m.getString("protected_actions")
@@ -127,7 +127,7 @@ internal object SnapshotCodec {
     }
     fun encode(s: Snapshot, encrypt: (String) -> String = { it }): JSONObject = JSONObject().put("schema", 2).put("url", s.server.url).put("enabled", s.server.enabled).put("appearance", s.appearance).apply {
         put("servers", JSONArray().apply { s.servers.forEach { put(JSONObject().put("url", it.url).put("enabled", it.enabled).put("token", it.lockedToken.ifBlank { encrypt(it.token) })) } })
-        put("topics", JSONArray().apply { s.topics.forEach { t -> put(JSONObject().put("name", t.name).put("label", t.label).put("muted", t.muted).put("joined", t.joined).put("server", t.server).put("min_priority", t.minPriority).put("notify_tags", t.notifyTags).put("allow_broadcast", t.allowBroadcast)) } })
+        put("topics", JSONArray().apply { s.topics.forEach { t -> put(JSONObject().put("name", t.name).put("label", t.label).put("muted", t.muted).put("joined", t.joined).put("server", t.server).put("min_priority", t.minPriority).put("notify_tags", t.notifyTags).put("allow_broadcast", t.allowBroadcast).put("persistent_alert", t.persistentAlert).put("vibration_version", t.vibrationVersion)) } })
         put("messages", JSONArray().apply { s.messages.forEach { m -> put(MessageCodec.encode(m).apply { if (m.lockedActions.isNotBlank()) { put("protected_actions", m.lockedActions); remove("actions") } else if (m.actions.isNotEmpty()) { put("protected_actions", encrypt(MessageCodec.actions(m.actions).toString())); remove("actions") } }) } })
         put("deleted", MessageArchive.encodeDeleted(s.deleted)); put("processed", MessageArchive.encodeDeleted(s.processed))
         put("sequences", JSONArray().apply { s.sequences.forEach { put(JSONObject().put("server", it.server).put("topic", it.topic).put("sequence_id", it.sequenceId).put("time", it.time).put("id", it.id).put("event", it.event)) } })

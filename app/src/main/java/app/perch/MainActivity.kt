@@ -267,7 +267,11 @@ class MainActivity : ComponentActivity() {
     }
 }
 @Composable private fun FilterPill(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Surface(onClick = onClick, modifier = modifier.heightIn(min = 48.dp), shape = RoundedCornerShape(14.dp), color = if (selected) MaterialTheme.colorScheme.surfaceContainerLowest else Color.Transparent, shadowElevation = if (selected) 1.dp else 0.dp) { Text(label, Modifier.padding(horizontal = 4.dp, vertical = 8.dp), fontSize = 12.sp, lineHeight = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant) }
+    Surface(onClick = onClick, modifier = modifier.heightIn(min = 48.dp), shape = RoundedCornerShape(14.dp), color = if (selected) MaterialTheme.colorScheme.surfaceContainerLowest else Color.Transparent, shadowElevation = if (selected) 1.dp else 0.dp) {
+        Box(Modifier.fillMaxWidth().heightIn(min = 48.dp), contentAlignment = Alignment.Center) {
+            Text(label, fontSize = 12.sp, lineHeight = 18.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Clip, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
 }
 @Composable private fun InboxSearchField(query: String, update: (String) -> Unit, modifier: Modifier = Modifier) {
     val focus = LocalFocusManager.current

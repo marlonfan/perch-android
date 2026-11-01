@@ -1,5 +1,13 @@
 # 验证记录
 
+## 0.5.5 按钮标签居中与发布门禁
+
+2026-11-01。versionName 0.5.5 / versionCode 10，基线86e8475（v0.5.4）。FilterPill 改用显式 Alignment.Center 容器承载全部/未读短标签，移除文字内部偏移，保持48dp触控区域；搜索、主题菜单、数量读屏描述与全部已读范围不变。网络、DNS及TLS代码未改。
+
+Reviewer（Orca Worker）审查通过，无P1/P2阻断；独立复跑41项JVM测试通过，日志：logs/handshake-ui-review-test.log。报告：docs/review-handshake-ui.md。初次修正构建、41项JVM测试及Release Lint通过，日志：logs/handshake-ui-build.log、logs/handshake-ui-tests.log；版本更新后的Debug构建、41项JVM测试（0 failure / 0 error）和Release Lint通过，日志：logs/release-0.5.5-build.log、logs/release-0.5.5-preflight.log。签名构建和GitHub Release上传由v0.5.5标签工作流执行，结果以工作流及发布附件为准。没有运行模拟器或操作手机，实际字形与字体缩放效果仍待设备确认。
+
+手机网络后续证据：用户提供的Clash截图中，目标连接命中DirectForce直连后报dns resolve failed / couldn't find ip / no ip address。该记录明确呈现代理直连DNS解析失败，不等于域名没有公开DNS记录；具体解析器配置仍未核实。用户据此授权按现有网络设置发布UI修正版，不再将本次发布作为TLS修复。目标域名及截图其他连接信息不写入公开文档。开发机同款OkHttp默认/TLS1.2/TLS1.3均握手成功、HTTP200+h2的日志仅为服务端对照：logs/handshake-okhttp-probe.log。详情见docs/handshake-followup.md。
+
 ## 0.5.4 顶部搜索与全部已读菜单
 
 2026-10-30，基线 fc7f4ad（v0.5.3）。用户要求取消独立悬浮框，把全部已读放进主题按钮展开菜单。移除 FAB 及其底部额外留白，菜单保留双勾和完整文字，无未读时禁用；readAll lambda 与当前服务全量范围不变，不修改 TLS 或网络逻辑。versionName 0.5.4 / versionCode 9。本轮不运行模拟器、不操作手机、不向主题发送消息。本地 Debug 构建、41 项 JVM 测试与 Release Lint 通过，日志：logs/release-0.5.4-build.log、logs/release-0.5.4-tests.log。Python 脚本语法与 git diff --check 通过，日志：logs/release-0.5.4-script-check.log、logs/release-0.5.4-diff-check.log。后续按用户要求缩小全部/未读切换并新增同一行常显搜索框，搜索标题、正文及标签，支持清除和无结果提示。前述构建日志只覆盖菜单调整，搜索变更后的 Debug 构建、41 项 JVM 测试与 Release Lint 通过，日志：logs/inbox-search-build.log、logs/inbox-search-tests.log；脚本语法与diff检查通过，日志：logs/inbox-search-script-check.log、logs/inbox-search-diff-check.log。需求与布局见 docs/inbox-search.md，Reviewer（Orca Worker）对菜单与搜索合并的最终 diff 审查通过，无 P1/P2 阻断；独立复跑 41 项 JVM 测试通过，日志：logs/inbox-search-review-test.log。最终报告：docs/review-read-all-menu.md。发布流程由 v0.5.4 标签触发 GitHub Actions 执行签名构建及附件上传，结果以工作流与 Release 附件为准。

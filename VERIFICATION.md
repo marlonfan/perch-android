@@ -10,6 +10,8 @@
 
 开源准备包含 Apache-2.0、NOTICE、第三方署名和 APK 内许可证、贡献/安全/隐私说明。GitHub visibility、签名 Release 和最终审查状态以实际交付回执为准。
 
+Reviewer（Orca Worker）独立审查基线至 `88b82c6` 的完整候选，通过且无 P1/P2 阻断，可发布。报告 `docs/review-0.6.0.md`，开源专项 `docs/review-open-source.md`。独立复跑 `:app:testDebugUnitTest :app:assembleDebug`，62 项测试全通过，日志 `logs/review-0.6.0-gates.log`。发布前再次扫描可达历史和完整提交消息，通过；日志 `logs/open-source-history-audit.log`、`logs/release-0.6.0-commit-message-audit.log`。
+
 本轮两名开发 Orca Worker 因模型来源用量/凭据错误中断；Lead 接手其未完成草稿，修复后补充测试与文档。尚未将其误计为完成的 Worker 任务。现有 Orca reviewer 做独立审查。未运行模拟器、操作手机或向真实主题发送消息；持续提醒、厂商限制、通知渠道迁移和系统授权/安装页仍需设备验证。
 
 ## 0.5.5 按钮标签居中与发布门禁

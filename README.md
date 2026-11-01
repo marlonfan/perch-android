@@ -6,7 +6,9 @@
 
 ## 体验首版
 
-当前版本 **0.6.0**，Android 8.0 及以上可用。在 [GitHub Releases](https://github.com/marlonfan/perch-android/releases/latest) 下载 `Perch-0.6.0.apk`，直接覆盖安装已有体验版，保留连接配置和本地消息。首次打开有明确标记的演示消息，不会订阅或发布到任何远程主题。
+当前版本 **0.6.1**，Android 8.0 及以上可用。在 [GitHub Releases](https://github.com/marlonfan/perch-android/releases/latest) 下载 `Perch-0.6.1.apk`，直接覆盖安装已有体验版，保留连接配置和本地消息。首次打开有明确标记的演示消息，不会订阅或发布到任何远程主题。
+
+0.6.1 修正移除服务的保存失败路径：成功保存后才清理系统通知并停止接收；失败时保留服务、提醒与确认窗口，并显示重试提示。包含 0.6.0 的全部新功能。
 
 0.6.0 新增订阅长振动和最高优先级持续提醒，设置内可检查 GitHub 更新、查看下载进度并交给系统安装。持续提醒默认关闭，旧订阅需主动开启长振动；实际声音/振动受系统设置影响。更新仍需 Android 授权与安装确认。项目采用 Apache License 2.0，新增贡献、安全及隐私说明。详情见 [发布说明](release-notes/0.6.0.md)。
 

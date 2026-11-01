@@ -143,6 +143,7 @@ private fun linkHost(url: String): String = runCatching { Uri.parse(url).host }.
 @Composable internal fun ServerManager(s: Snapshot, store: Store, dismiss: () -> Unit, saved: () -> Unit) {
     var editing by remember { mutableStateOf<Server?>(if (s.servers.isEmpty()) Server() else null) }
     var removing by remember { mutableStateOf<Server?>(null) }
+    var removalError by remember { mutableStateOf("") }
     val context = LocalContext.current
     if (editing != null) {
         ServerDialog(editing!!, { editing = null; if (s.servers.isEmpty()) dismiss() }) { server ->
@@ -162,7 +163,7 @@ private fun linkHost(url: String): String = runCatching { Uri.parse(url).host }.
                         Row { Text(if (server.enabled) "接收已开启" else "接收已暂停", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall); Switch(server.enabled, { store.serverEnabled(server.url, it); NotificationService.sync(context) }) }
                         Row {
                             TextButton(onClick = { editing = server }) { Text("编辑") }
-                            TextButton(onClick = { removing = server }) { Text("移除") }
+                            TextButton(onClick = { removalError = ""; removing = server }) { Text("移除") }
                         }
                     }
                 }
@@ -170,7 +171,15 @@ private fun linkHost(url: String): String = runCatching { Uri.parse(url).host }.
             OutlinedButton(onClick = { editing = Server() }) { Text("添加服务") }
         }
     }, confirmButton = { TextButton(onClick = dismiss) { Text("完成") } })
-    removing?.let { server -> AlertDialog(onDismissRequest = { removing = null }, title = { Text("移除服务？") }, text = { Text("停止此服务的接收并移除订阅。本地消息保留，重新添加服务和主题后可查看。") }, confirmButton = { TextButton(onClick = {
-        s.messages.filter { it.server == server.url }.forEach { NotificationService.cancel(context, it) }; store.removeServer(server.url); NotificationService.sync(context); removing = null
+    removing?.let { server -> AlertDialog(onDismissRequest = { removing = null }, title = { Text("移除服务？") }, text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("停止此服务的接收并移除订阅。本地消息保留，重新添加服务和主题后可查看。")
+        if (removalError.isNotBlank()) Text(removalError, color = MaterialTheme.colorScheme.error)
+    } }, confirmButton = { TextButton(onClick = {
+        // Store reconciles notifications only after persistence succeeds. A failed removal
+        // leaves reception, alerts and the confirmation in place so the user can retry.
+        if (store.removeServer(server.url)) {
+            NotificationService.sync(context)
+            removing = null
+        } else removalError = store.storageError.value.ifBlank { "移除失败，请稍后重试。" }
     }) { Text("移除") } }, dismissButton = { TextButton(onClick = { removing = null }) { Text("取消") } }) }
 }

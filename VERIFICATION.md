@@ -1,5 +1,13 @@
 # 验证记录
 
+## 0.6.1 移除服务失败路径补丁
+
+2026-11-01，基线 v0.6.0（`a4e72ad`），versionName 0.6.1 / versionCode 12。0.6.0 已经 CI 签名发布并通过公开下载/校验和/签名验证，随后读取开发 Orca Worker `notification-alerts` 的补充终态发现 P2：MessageExtras.kt 移除服务先清通知再保存，忽略保存失败。另一开发 Orca Worker `in-app-updates` 对更新部分复核通过，62 项测试通过。不能把 reviewer 初轮无阻断结论当作该补充问题不存在。
+
+0.6.1 移除提前取消通知，改为仅在 `store.removeServer()` 成功后同步服务和关闭确认窗口；统一通知清理由 Store 在成功持久化后执行。失败时保留窗口和提醒并显示可重试错误。其余功能保持不变。补丁门禁和最终 reviewer 复核另记录。
+
+- PASS — `./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintRelease --offline --console=plain`；Debug 构建、既有 62 项 JVM 测试与 Release lint；日志 `logs/release-0.6.1-gates.log`。该保存失败 UI 分支未做设备注入，不把既有测试通过当作故障注入证明。
+
 ## 0.6.0 持续提醒、应用内更新与开源
 
 2026-11-01。基线 `f8df7df`（0.5.5），versionName 0.6.0 / versionCode 11。新增按主题启用的长振动及最高优先级持续提醒；新增主动检查 GitHub 正式版、下载进度与取消/重试、安装包校验及系统安装交接。网络、DNS/TLS 与现有收件箱布局保持原行为。详细边界见 `docs/priority-alerts.md`、`docs/in-app-updates.md`，需求见 `docs/priority-update-spec.md`。

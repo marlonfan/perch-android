@@ -1,5 +1,7 @@
 # 0.6.0 最终合并候选 — Reviewer 审查报告
 
+> **初轮后补充（2026-11-01）**：发布后开发 Orca Worker `notification-alerts` 补充终态发现一项初轮遗漏的 P2——`MessageExtras.kt` ServerManager 移除服务时先逐条 `NotificationService.cancel` 再 `store.removeServer`，且忽略返回值：保存失败时服务/订阅/接收仍在，但通知（含 INSISTENT 提醒）已被清且窗口关闭，用户误以为移除成功。初轮审查的「reconcile 统一清理」结论覆盖了 Store 路径，但未发现 ServerManager 这处绕过 Store 的先行 cancel，属审查盲区（同类调用点检查当时未做）。修复已在 0.6.1（commit 62d2f95）完成并经本 reviewer 复核通过：仅在 `store.removeServer()` 成功后才 sync+关窗，失败保留提醒与窗口并显示错误，通知清理由 reconcile 在持久化成功后统一执行。详见 docs/review-0.6.1.md。以下初轮原文保留不改。
+
 2026-11-01。Reviewer（Orca Worker）独立审查 f8df7df（0.5.5）→ 88b82c6 的完整候选（开源准备 71de762 + 功能 88b82c6，34 文件 +1576 行）。只读审查，未改代码、未 push/release、未启动模拟器/操作手机。开源部分已并入（详见 docs/review-open-source.md，本报告只补 0.6.0 相关增量）。
 
 ## 结论

@@ -8,6 +8,8 @@
 
 - PASS — `./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintRelease --offline --console=plain`；Debug 构建、既有 62 项 JVM 测试与 Release lint；日志 `logs/release-0.6.1-gates.log`。该保存失败 UI 分支未做设备注入，不把既有测试通过当作故障注入证明。
 
+开发 Orca Worker `notification-alerts` 已独立确认 P2 关闭，失败分支保留服务/提醒/窗口、成功后清理、跨服务隔离正确；独立复跑62项JVM全绿。Orca Worker `reviewer` 对 `62d2f95` 复核通过，无未关闭P1/P2，可发布0.6.1；报告 `docs/review-0.6.1.md`，门禁日志 `logs/release-0.6.1-review-gates.log`。更新模块由 Orca Worker `in-app-updates` 在0.6.0候选独立复核通过，补丁未修改更新模块。
+
 ## 0.6.0 持续提醒、应用内更新与开源
 
 2026-11-01。基线 `f8df7df`（0.5.5），versionName 0.6.0 / versionCode 11。新增按主题启用的长振动及最高优先级持续提醒；新增主动检查 GitHub 正式版、下载进度与取消/重试、安装包校验及系统安装交接。网络、DNS/TLS 与现有收件箱布局保持原行为。详细边界见 `docs/priority-alerts.md`、`docs/in-app-updates.md`，需求见 `docs/priority-update-spec.md`。

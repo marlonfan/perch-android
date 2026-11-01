@@ -1,0 +1,15 @@
+Perch (栖信)
+Copyright 2026 marlonfan and Perch contributors
+
+Perch is an independent ntfy-compatible Android client.
+It is not an official ntfy application.
+
+ntfy Emoji tag mapping
+Source: https://github.com/binwiederhier/ntfy/blob/v2.34.0/mail/mailer_emoji_map.json
+Copyright ntfy contributors.
+Used under the Apache License 2.0 option of ntfy's licensing terms.
+The unmodified mapping and its upstream license are included in
+app/src/main/assets/notices/.
+
+Other dependencies retain their respective copyright and license terms.
+See THIRD_PARTY_NOTICES.md.

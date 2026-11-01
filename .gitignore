@@ -12,3 +12,8 @@ __pycache__/
 *.keystore
 .idea/
 .DS_Store
+.cindy-worktrees/
+.env
+.env.*
+*.p12
+*.pem

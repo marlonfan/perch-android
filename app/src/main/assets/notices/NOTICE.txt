@@ -2,3 +2,6 @@ ntfy Emoji tag mapping
 Source: https://github.com/binwiederhier/ntfy/blob/v2.34.0/mail/mailer_emoji_map.json
 Copyright ntfy contributors. Used under the Apache License 2.0 option of ntfy's licensing terms.
 The mapping is unmodified. Its upstream license is included as ntfy-LICENSE.txt.
+
+Perch and Apache-licensed runtime dependencies: see Perch-NOTICE.txt and Apache-2.0.txt.
+commonmark-java and its GFM extensions: see commonmark-LICENSE.txt.

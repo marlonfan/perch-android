@@ -2,6 +2,8 @@
 
 一个用 **Kotlin · Jetpack Compose · Material 3** 编写的 Android ntfy 客户端。支持消息接收、交互按钮、附件、多服务器与发送分享。
 
+源码按 [Apache License 2.0](LICENSE) 开放。栖信是独立的 ntfy 兼容客户端。参与开发见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全问题见 [SECURITY.md](SECURITY.md)，数据处理见 [PRIVACY.md](PRIVACY.md)，第三方署名见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 ## 体验首版
 
 当前版本 **0.5.5**，Android 8.0 及以上可用。在 [GitHub Releases](https://github.com/marlonfan/perch-android/releases/latest) 下载 `Perch-0.5.5.apk`，直接覆盖安装已有体验版，保留连接配置和本地消息。首次打开有明确标记的演示消息，不会订阅或发布到任何远程主题。
